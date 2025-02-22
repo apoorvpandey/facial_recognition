@@ -66,7 +66,9 @@ class ScannerUtils {
 
       // Handle single plane format (iOS)
       if (cameraImage.planes.length != 1) {
-        print("❌ Unsupported number of planes: ${cameraImage.planes.length}");
+        if (kDebugMode) {
+          print("❌ Unsupported number of planes: ${cameraImage.planes.length}");
+        }
         return null;
       }
 
@@ -82,7 +84,9 @@ class ScannerUtils {
         ),
       );
     } catch (e) {
-      print("❌ Error converting CameraImage to InputImage: $e");
+      if (kDebugMode) {
+        print("❌ Error converting CameraImage to InputImage: $e");
+      }
       return null;
     }
   }
