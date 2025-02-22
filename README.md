@@ -73,8 +73,8 @@ widget:
 ```dart
 Widget _buildResults() {
   if (_scanResults == null ||
-          _camera == null ||
-          !_camera!.value.isInitialized) {
+      _camera == null ||
+      !_camera!.value.isInitialized) {
     return const Center(child: CircularProgressIndicator());
   }
 
@@ -146,3 +146,6 @@ flutter run
   necessary permissions when prompted.
 - **Performance**: Real-time face detection and embedding extraction can be resource-intensive. It
   is recommended to test the application on a device with a capable processor and sufficient RAM.
+
+Demo
+APK: [Download APK](https://drive.google.com/file/d/1M6xqMXUkSgj03VRRyBRdjBPQskJ6MFVO/view?usp=sharing)
