@@ -11,6 +11,7 @@ users to register a face and later verify if a detected face matches the registe
 - **Face Verification**: Compares a detected face with the registered face to determine a match.
 - **Blink Detection**: Detects if the user's eyes are closed, which can be used as an additional
   security measure.
+- **Multi-User Attendance System**: Supports verification and attendance logging for multiple users.
 
 ## Tools and Libraries Used
 
@@ -58,7 +59,14 @@ google_mlkit_commons: ^0.9.0
   compares it with the stored embedding using cosine similarity.
 - If the similarity score is above a certain threshold (e.g., 85%), the face is considered a match.
 
-### 5. Blink Detection
+### 5. Multi-User Attendance System
+
+- The system allows multiple users to register and verify their attendance.
+- Each detected face is checked against stored embeddings.
+- If a match is found, the corresponding user’s attendance is logged.
+- Attendance records can be retrieved for tracking purposes.
+
+### 6. Blink Detection
 
 - The application checks if the user's eyes are closed by analyzing the eye open probabilities
   provided by Google ML Kit.
@@ -120,32 +128,35 @@ flutter pub get
 flutter run
 ```
 
-### 4. Usage
+## How to Use the Facial Recognition App
 
-- **Register Face**: Tap the "Register Face" button to capture and store a face embedding.
-- **Verify Face**: Blink your eyes normally or slowly to verify automatically, or tap the "Verify
-  Face" button to compare the current face with the registered face manually.
-- If the similarity score is above a certain threshold (e.g., 85%), the face is considered a match.
-- **Toggle Camera**: Use the camera toggle button to switch between front and rear cameras.
+### 1. Open the App
 
-## Future Enhancements
+- Launch the app on your device.
+- The camera will start automatically.
 
-- **Multi-Face Support**: Extend the application to support registration and verification of
-  multiple faces.
-- **Cloud Integration**: Store face embeddings securely in the cloud for cross-device
-  synchronization.
-- **Enhanced Security**: Implement additional liveness detection techniques, such as head movement
-  or smile detection, to improve security.
+### 2. Register a Face
 
-## Additional Notes
+- Click on the "Register Face" button.
+- The app will capture your face and process the image.
+- Enter your name when prompted.
+- Your face will be stored in the database.
 
-- **Model Preparation**: Ensure that the TensorFlow Lite model (`facenet.tflite`) is placed in the
-  appropriate directory within the project. This model is responsible for extracting face
-  embeddings.
-- **Permissions**: The application requires camera permissions to function. Make sure to grant the
-  necessary permissions when prompted.
-- **Performance**: Real-time face detection and embedding extraction can be resource-intensive. It
-  is recommended to test the application on a device with a capable processor and sufficient RAM.
+### 3. Verify a Face
 
-Demo
-APK: [Download APK](https://drive.google.com/file/d/1M6xqMXUkSgj03VRRyBRdjBPQskJ6MFVO/view?usp=sharing)
+- Click on the "Verify Face" button.
+- The app will scan your face and compare it with stored faces.
+- If a match is found, your name will be displayed.
+- If no match is found, you will be notified.
+
+### 4. Switch Camera
+
+- Tap the camera switch button to change between front and back cameras.
+
+### 5. View Registered Users
+
+- Open the "Registered Users" screen to see the list of stored faces.
+
+### 6. Close the App
+
+- Simply exit the app when done.

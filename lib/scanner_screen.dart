@@ -8,9 +8,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
 import 'package:image/image.dart' as img;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 
+import 'database_helper.dart';
 import 'face_mask_painters.dart'; // Use 'img' as alias for the image package
 
 class ScannerScreen extends StatefulWidget {
@@ -190,6 +190,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
     if (_camera!.value.isStreamingImages) {
       await _camera!.stopImageStream();
     }
+
     final XFile imageFile = await _camera!.takePicture();
     final List<double> faceEmbedding =
         await _extractFaceEmbedding(imageFile.path);
@@ -203,15 +204,59 @@ class _ScannerScreenState extends State<ScannerScreen> {
       return;
     }
 
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    await prefs.setString("registered_face", jsonEncode(faceEmbedding));
+    String? name = await _showNameInputDialog();
+    if (name == null || name.isEmpty) {
+      if (kDebugMode) {
+        print("❌ No name entered. Registration canceled.");
+      }
+      return;
+    }
+
+    String embeddingJson = jsonEncode(faceEmbedding);
+    await DatabaseHelper.instance.addUser(name, embeddingJson);
 
     if (kDebugMode) {
-      print("✅ Face Registered Successfully!");
+      print("✅ Face Registered Successfully in DB!");
     }
     _showResultDialog(
         'Face Registered!', 'Face has been registered successfully.');
     _initializeCamera();
+  }
+
+  Future<String?> _showNameInputDialog() async {
+    TextEditingController nameController = TextEditingController();
+
+    return showDialog<String>(
+      barrierDismissible: false,
+      context: context,
+      builder: (BuildContext context) {
+        return PopScope(
+          canPop: false,
+          child: AlertDialog(
+            title: const Text("Enter Your Name"),
+            content: TextField(
+              controller: nameController,
+              decoration: const InputDecoration(hintText: "Enter your name"),
+            ),
+            actions: <Widget>[
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop(); // Cancel registration
+                },
+                child: const Text("Cancel"),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context)
+                      .pop(nameController.text.trim()); // Return entered name
+                },
+                child: const Text("Register"),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _verifyFace() async {
@@ -240,10 +285,9 @@ class _ScannerScreenState extends State<ScannerScreen> {
         return;
       }
 
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-      String? savedFaceData = prefs.getString("registered_face");
-
-      if (savedFaceData == null) {
+      List<Map<String, dynamic>> users =
+          await DatabaseHelper.instance.getUsers();
+      if (users.isEmpty) {
         if (kDebugMode) {
           print("❌ No registered face found!");
         }
@@ -251,44 +295,35 @@ class _ScannerScreenState extends State<ScannerScreen> {
         return;
       }
 
-      List<double> savedEmbedding =
-          List<double>.from(jsonDecode(savedFaceData));
+      double highestSimilarity = 0.0;
+      String matchedUser = "Unknown";
 
-      // Debug: Print embeddings and similarity score
-      if (kDebugMode) {
-        print("New Embedding: $newEmbedding");
-      }
-      if (kDebugMode) {
-        print("Saved Embedding: $savedEmbedding");
-      }
-      double similarity = 100 * _cosineSimilarity(newEmbedding, savedEmbedding);
-      if (kDebugMode) {
-        print("Similarity Score: $similarity");
+      for (var user in users) {
+        List<double> savedEmbedding =
+            List<double>.from(jsonDecode(user['embedding']));
+        double similarity =
+            100 * _cosineSimilarity(newEmbedding, savedEmbedding);
+
+        if (similarity > highestSimilarity) {
+          highestSimilarity = similarity;
+          matchedUser = user['name'];
+        }
       }
 
-      // if (similarity > 90) {
-      //   // High confidence match
-      //   _showResultDialog('Face Matched!', 'Login Successful');
-      //   print("✅ Face Matched! Login Successful.");
-      // } else {
-      //   _showResultDialog('Face Not Recognized', 'Face not recognized.');
-      //   print("❌ Face Not Recognized.");
-      // }
-
-      if (similarity.round() >= 85) {
-        // Adjust threshold as needed
-        _showResultDialog(
-            'Face Matched!', 'Login Successful ${similarity.round()}%');
+      if (highestSimilarity.round() >= 80) {
+        _showResultDialog('Face Matched!',
+            'Welcome, $matchedUser (${highestSimilarity.round()}%)');
         if (kDebugMode) {
-          print("✅ Face Matched! Login Successful.");
+          print("✅ Face Matched! Welcome, $matchedUser.");
         }
       } else {
         _showResultDialog('Face Not Recognized',
-            'Face not recognized.${similarity.round()}%');
+            'Face not recognized. (${highestSimilarity.round()}%)');
         if (kDebugMode) {
           print("❌ Face Not Recognized.");
         }
       }
+
       _initializeCamera();
     });
   }

@@ -1,7 +1,11 @@
-import 'package:facial_recognition/scanner_screen.dart';
 import 'package:flutter/material.dart';
 
-void main() {
+import 'database_helper.dart';
+import 'home_screen.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await DatabaseHelper.instance.database;
   runApp(const MyApp());
 }
 
@@ -16,8 +20,7 @@ class MyApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const ScannerScreen(),
+      home: const HomeScreen(),
     );
   }
 }
-
