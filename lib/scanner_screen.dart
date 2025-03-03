@@ -25,6 +25,7 @@ class ScannerScreenState extends State<ScannerScreen> {
   File? jsonFile;
   dynamic _scanResults;
   late Interpreter _tfliteInterpreter; // TFLite interpreter
+  late IsolateInterpreter _isolateInterpreter; // TFLite interpreter
   CameraController? _camera;
   bool _isDetecting = false;
   CameraLensDirection _direction = CameraLensDirection.front;
@@ -77,12 +78,17 @@ class ScannerScreenState extends State<ScannerScreen> {
 
   Future<void> loadModel() async {
     try {
-      _tfliteInterpreter =
-          await Interpreter.fromAsset('assets/mobile_face_net.tflite');
+      final int numThreads = Platform.numberOfProcessors;
+      _tfliteInterpreter = await Interpreter.fromAsset(
+          'assets/mobile_face_net.tflite',
+          options: InterpreterOptions()..threads = numThreads);
+
+      _isolateInterpreter =
+          await IsolateInterpreter.create(address: _tfliteInterpreter.address);
       _tfliteInterpreter.allocateTensors();
 
       if (kDebugMode) {
-        print("✅ TFLite model loaded successfully!");
+        print("✅ TFLite model loaded successfully! with $numThreads threads");
       }
     } catch (e) {
       if (kDebugMode) {
@@ -123,15 +129,15 @@ class ScannerScreenState extends State<ScannerScreen> {
             } else {
               _faceFound = true;
             }
-            Face _face;
+            Face face;
             img_lib.Image convertedImage =
                 _convertCameraImage(image, _direction);
-            for (_face in result) {
+            for (face in result) {
               double x, y, w, h;
-              x = (_face.boundingBox.left - 10);
-              y = (_face.boundingBox.top - 10);
-              w = (_face.boundingBox.width + 10);
-              h = (_face.boundingBox.height + 10);
+              x = (face.boundingBox.left - 10);
+              y = (face.boundingBox.top - 10);
+              w = (face.boundingBox.width + 10);
+              h = (face.boundingBox.height + 10);
               img_lib.Image croppedImage = img_lib.copyCrop(convertedImage,
                   x: x.round(),
                   y: y.round(),
@@ -143,7 +149,7 @@ class ScannerScreenState extends State<ScannerScreen> {
               res = _recognise(croppedImage);
               // int endTime = new DateTime.now().millisecondsSinceEpoch;
               // print("Inference took ${endTime - startTime}ms");
-              finalResult.add(res, _face);
+              finalResult.add(res, face);
             }
             setState(() {
               _scanResults = finalResult;
@@ -153,7 +159,9 @@ class ScannerScreenState extends State<ScannerScreen> {
           },
         ).catchError(
           (error) {
-            print("error: $error");
+            if (kDebugMode) {
+              print("error: $error");
+            }
             _isDetecting = false;
           },
         );
@@ -226,8 +234,8 @@ class ScannerScreenState extends State<ScannerScreen> {
     _initializeCamera();
   }
 
-  img_lib.Image _convertCameraImage(
-      CameraImage image, CameraLensDirection _dir) {
+  img_lib.Image _convertCameraImage(CameraImage image,
+      CameraLensDirection dir) {
     int width = image.width;
     int height = image.height;
     // imglib -> Image package from https://pub.dartlang.org/packages/image
@@ -257,7 +265,7 @@ class ScannerScreenState extends State<ScannerScreen> {
       }
     }
 
-    var img1 = (_dir == CameraLensDirection.front)
+    var img1 = (dir == CameraLensDirection.front)
         ? img_lib.copyRotate(img, angle: -90)
         : img_lib.copyRotate(img, angle: 90);
     return img1;
@@ -267,7 +275,7 @@ class ScannerScreenState extends State<ScannerScreen> {
     List input = imageToByteListFloat32(img, 112, 128, 128);
     input = input.reshape([1, 112, 112, 3]);
     List output = List.filled(1 * 192, 0.0).reshape([1, 192]);
-    _tfliteInterpreter.run(input, output);
+    _isolateInterpreter.run(input, output);
     output = output.reshape([192]);
     e1 = List.from(output); // Ensure e1 is assigned a valid list
     return _compare(e1!).toUpperCase();
