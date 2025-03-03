@@ -1,183 +1,87 @@
-import 'dart:math';
-import 'dart:ui' as ui;
-
 import 'package:flutter/material.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
 
-enum Detector {
-  face,
-  text,
-}
+class FaceDetectorPainter extends CustomPainter {
+  FaceDetectorPainter(this.imageSize, this.results);
 
-const List<Point<int>> faceMaskConnections = [
-  Point(0, 4),
-  Point(0, 55),
-  Point(4, 7),
-  Point(4, 55),
-  Point(4, 51),
-  Point(7, 11),
-  Point(7, 51),
-  Point(7, 130),
-  Point(51, 55),
-  Point(51, 80),
-  Point(55, 72),
-  Point(72, 76),
-  Point(76, 80),
-  Point(80, 84),
-  Point(84, 72),
-  Point(72, 127),
-  Point(72, 130),
-  Point(130, 127),
-  Point(117, 130),
-  Point(11, 117),
-  Point(11, 15),
-  Point(15, 18),
-  Point(18, 21),
-  Point(21, 121),
-  Point(15, 121),
-  Point(21, 25),
-  Point(25, 125),
-  Point(125, 128),
-  Point(128, 127),
-  Point(128, 29),
-  Point(25, 29),
-  Point(29, 32),
-  Point(32, 0),
-  Point(0, 45),
-  Point(32, 41),
-  Point(41, 29),
-  Point(41, 45),
-  Point(45, 64),
-  Point(45, 32),
-  Point(64, 68),
-  Point(68, 56),
-  Point(56, 60),
-  Point(60, 64),
-  Point(56, 41),
-  Point(64, 128),
-  Point(64, 127),
-  Point(125, 93),
-  Point(93, 117),
-  Point(117, 121),
-  Point(121, 125),
-];
-
-class FaceMask extends CustomPainter {
-  // Face painter for AI face mask
-  FaceMask(
-    this.absoluteImageSize,
-    this.faces,
-    this.onEyesClosed,
-  );
-
-  final Size absoluteImageSize;
-  final List<Face> faces;
-  final Function onEyesClosed;
+  final Size imageSize;
+  late double scaleX;
+  late double scaleY;
+  late dynamic results;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final double scaleX = size.width / absoluteImageSize.width;
-    final double scaleY = size.height / absoluteImageSize.height;
-
     final Paint paint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0
-      ..color = Colors.purple;
+      ..strokeWidth = 3.0
+      ..color = Colors.greenAccent;
 
-    final Paint greenPaint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.0
-      ..color = Colors.pink;
+    for (String label in results.keys) {
+      for (Face face in results[label]) {
+        // Calculate scaling factors
+        scaleX = size.width / imageSize.width;
+        scaleY = size.height / imageSize.height;
 
-    for (final Face face in faces) {
-      // Started a loop to detect eye expression
-      final contour = face.contours[FaceContourType.face];
-      if (contour != null) {
-        // Draw contour points
-        canvas.drawPoints(
-          ui.PointMode.points,
-          contour.points
-              .map((offset) => Offset((offset.x * scaleX), offset.y * scaleY))
-              .toList(),
+        // Draw the bounding box
+        canvas.drawRRect(
+          _scaleRect(
+            rect: face.boundingBox,
+            imageSize: imageSize,
+            widgetSize: size,
+            scaleX: scaleX,
+            scaleY: scaleY,
+          ),
           paint,
         );
 
-        // Check for eye expression
-        String expressionText = '';
-        if (face.leftEyeOpenProbability != null &&
-            face.rightEyeOpenProbability != null &&
-            face.leftEyeOpenProbability! < 0.4 &&
-            face.rightEyeOpenProbability! < 0.4) {
-          expressionText = 'Eyes Closed';
-        } else if (face.leftEyeOpenProbability != null &&
-            face.rightEyeOpenProbability != null &&
-            face.leftEyeOpenProbability! > 0.6 &&
-            face.rightEyeOpenProbability! > 0.6) {
-          // expressionText = 'Eyes Open';
-        }
-        if (expressionText == 'Eyes Closed') {
-          onEyesClosed(); // Triggering the callback
-          break; // Exiting the loop if "Eyes Closed" detected
-        }
+        // Calculate the center of the bounding box
+        final centerX = size.width -
+            (face.boundingBox.left + face.boundingBox.width / 2) * scaleX;
+        final centerY =
+            (face.boundingBox.top + face.boundingBox.height / 2) * scaleY;
 
-        // Draw expression text
-        if (expressionText.isNotEmpty) {
-          final textSpan = TextSpan(
-            text: expressionText,
-            style: TextStyle(color: Colors.white, fontSize: 16),
-          );
-          final textPainter = TextPainter(
-            text: textSpan,
-            textDirection: TextDirection.ltr,
-          );
-          textPainter.layout(
-            minWidth: 0,
-            maxWidth: size.width,
-          );
-          textPainter.paint(
-            canvas,
-            Offset(
-              face.boundingBox.left * scaleX + 10,
-              face.boundingBox.top * scaleY - 20,
-            ),
-          );
-        }
+        // Draw the label at the center of the bounding box
+        TextSpan span = TextSpan(
+          style: TextStyle(color: Colors.orange[300], fontSize: 15),
+          text: label,
+        );
+        TextPainter textPainter = TextPainter(
+          text: span,
+          textAlign: TextAlign.center, // Center the text
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
 
-        // Draw face mask connections
-        for (final connection in faceMaskConnections) {
-          if (connection.x < contour.points.length &&
-              connection.y < contour.points.length) {
-            canvas.drawLine(
-              Offset(
-                contour.points[connection.x].x * scaleX,
-                contour.points[connection.x].y * scaleY,
-              ),
-              Offset(
-                contour.points[connection.y].x * scaleX,
-                contour.points[connection.y].y * scaleY,
-              ),
-              paint,
-            );
-          }
-        }
+        // Position the text at the center of the bounding box
+        textPainter.paint(
+          canvas,
+          Offset(
+            centerX - textPainter.width / 2, // Center horizontally
+            centerY - textPainter.height / 2, // Center vertically
+          ),
+        );
       }
-
-      // Draw bounding box
-      canvas.drawRect(
-        Rect.fromLTRB(
-          face.boundingBox.left * scaleX,
-          face.boundingBox.top * scaleY,
-          face.boundingBox.right * scaleX,
-          face.boundingBox.bottom * scaleY,
-        ),
-        greenPaint,
-      );
     }
   }
 
   @override
-  bool shouldRepaint(FaceMask oldDelegate) {
-    return oldDelegate.absoluteImageSize != absoluteImageSize ||
-        oldDelegate.faces != faces;
+  bool shouldRepaint(FaceDetectorPainter oldDelegate) {
+    return oldDelegate.imageSize != imageSize || oldDelegate.results != results;
   }
+}
+
+RRect _scaleRect({
+  required Rect? rect,
+  required Size? imageSize,
+  required Size? widgetSize,
+  double? scaleX,
+  double? scaleY,
+}) {
+  return RRect.fromLTRBR(
+    widgetSize!.width - rect!.left.toDouble() * scaleX!,
+    rect.top.toDouble() * scaleY!,
+    widgetSize.width - rect.right.toDouble() * scaleX,
+    rect.bottom.toDouble() * scaleY,
+    Radius.circular(10),
+  );
 }
