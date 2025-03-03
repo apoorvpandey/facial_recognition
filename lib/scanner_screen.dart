@@ -79,7 +79,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
         fit: StackFit.expand,
         children: <Widget>[
           CameraPreview(_camera!),
-          if (_scanResults != null) _buildResults(),
+          // if (_scanResults != null) _buildResults(),
         ],
       ),
     );
@@ -187,9 +187,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
       }
       return;
     }
-    if (_camera!.value.isStreamingImages) {
-      await _camera!.stopImageStream();
-    }
+
     final XFile imageFile = await _camera!.takePicture();
     final List<double> faceEmbedding =
         await _extractFaceEmbedding(imageFile.path);
@@ -211,14 +209,11 @@ class _ScannerScreenState extends State<ScannerScreen> {
     }
     _showResultDialog(
         'Face Registered!', 'Face has been registered successfully.');
-    _initializeCamera();
   }
 
   Future<void> _verifyFace() async {
     if (_camera == null) {
-      if (kDebugMode) {
-        print('❌ Camera not initialized');
-      }
+      if (kDebugMode) print('❌ Camera not initialized');
       return;
     }
 
@@ -232,11 +227,9 @@ class _ScannerScreenState extends State<ScannerScreen> {
           await _extractFaceEmbedding(imageFile.path);
 
       if (newEmbedding.isEmpty) {
-        if (kDebugMode) {
-          print("❌ No face detected!");
-        }
+        if (kDebugMode) print("❌ No face detected!");
         _showResultDialog(
-            'No Face Detected', 'No face was detected in the image.');
+            'No Face Detected', 'Please ensure your face is visible.');
         return;
       }
 
@@ -244,97 +237,99 @@ class _ScannerScreenState extends State<ScannerScreen> {
       String? savedFaceData = prefs.getString("registered_face");
 
       if (savedFaceData == null) {
-        if (kDebugMode) {
-          print("❌ No registered face found!");
-        }
-        _showResultDialog('No Registered Face', 'No registered face found.');
+        if (kDebugMode) print("❌ No registered face found!");
+        _showResultDialog(
+            'No Registered Face', 'Please register your face first.');
         return;
       }
 
       List<double> savedEmbedding =
           List<double>.from(jsonDecode(savedFaceData));
-
-      // Debug: Print embeddings and similarity score
-      if (kDebugMode) {
-        print("New Embedding: $newEmbedding");
-      }
-      if (kDebugMode) {
-        print("Saved Embedding: $savedEmbedding");
-      }
       double similarity = 100 * _cosineSimilarity(newEmbedding, savedEmbedding);
-      if (kDebugMode) {
-        print("Similarity Score: $similarity");
-      }
 
-      // if (similarity > 90) {
-      //   // High confidence match
-      //   _showResultDialog('Face Matched!', 'Login Successful');
-      //   print("✅ Face Matched! Login Successful.");
-      // } else {
-      //   _showResultDialog('Face Not Recognized', 'Face not recognized.');
-      //   print("❌ Face Not Recognized.");
-      // }
+      if (kDebugMode) print("Similarity Score: $similarity");
 
       if (similarity.round() >= 85) {
-        // Adjust threshold as needed
         _showResultDialog(
-            'Face Matched!', 'Login Successful ${similarity.round()}%');
-        if (kDebugMode) {
-          print("✅ Face Matched! Login Successful.");
-        }
+            'Face Matched!', 'Welcome! ${similarity.round()}% Match.');
       } else {
         _showResultDialog('Face Not Recognized',
-            'Face not recognized.${similarity.round()}%');
-        if (kDebugMode) {
-          print("❌ Face Not Recognized.");
-        }
+            'Mismatch detected. ${similarity.round()}% Similarity.');
       }
+
       _initializeCamera();
     });
   }
 
   Future<List<double>> _extractFaceEmbedding(String imagePath) async {
     if (!_isModelLoaded) {
-      if (kDebugMode) {
-        print("❌ TFLite model not loaded!");
-      }
+      if (kDebugMode) print("❌ TFLite model not loaded!");
       return [];
     }
 
-    // Load and preprocess the image
+    // Load the image
     final image = img.decodeImage(File(imagePath).readAsBytesSync())!;
-    final resizedImage = img.copyResize(image,
-        width: 112, height: 112); // Resize to model input size
-    final input = imageToFloat32List(resizedImage, 112, 127.5, 128.0);
 
-    // Print input tensor shape for debugging
-    if (kDebugMode) {
-      print("Input tensor shape: [1, 112, 112, 3]");
+    // 🔹 Step 1: Run Google ML Kit's Face Detector
+    final inputImage = InputImage.fromFilePath(imagePath);
+    final List<Face> faces = await _faceDetector.processImage(inputImage);
+
+    if (faces.isEmpty) {
+      if (kDebugMode) print("❌ No face detected in image!");
+      return [];
     }
+
+    // 🔹 Step 2: Crop the detected face (first face found)
+    final Face face = faces.first;
+    final rect = face.boundingBox;
+
+    final croppedFace = img.copyCrop(
+      image,
+      x: rect.left.toInt(),
+      y: rect.top.toInt(),
+      width: rect.width.toInt(),
+      height: rect.height.toInt(),
+    );
+
+    // 🔹 Step 3: Resize, Normalize, and Extract Embeddings
+    final resizedImage = img.copyResize(croppedFace, width: 112, height: 112);
+    final input = imageToFloat32List(resizedImage, 112, 127.5, 128.0);
 
     // Run inference
     final output = List.filled(128, 0.0).reshape([1, 128]);
-    try {
-      // Reshape the input to match the model's expected shape
-      final inputTensor = input.reshape([1, 112, 112, 3]);
+    _tfliteInterpreter.run(input.reshape([1, 112, 112, 3]), output);
 
-      // Debug: Print input tensor data
-      if (kDebugMode) {
-        print("Input tensor data: $inputTensor");
-      }
+    return _normalize(List<double>.from(output[0]));
+  }
 
-      _tfliteInterpreter.run(inputTensor, output);
-    } catch (e) {
-      if (kDebugMode) {
-        print("❌ Error during inference: $e");
+// Cropping function
+  img.Image _cropFace(img.Image image) {
+    int x = (image.width * 0.2).toInt();
+    int y = (image.height * 0.2).toInt();
+    int w = (image.width * 0.6).toInt();
+    int h = (image.height * 0.6).toInt();
+    return img.copyCrop(image, x: x, y: y, width: w, height: h);
+  }
+
+  Float32List preprocessImage(img.Image image, int inputSize) {
+    final resizedImage =
+        img.copyResize(image, width: inputSize, height: inputSize);
+    final convertedBytes = Float32List(inputSize * inputSize * 3);
+    int pixelIndex = 0;
+
+    for (int y = 0; y < inputSize; y++) {
+      for (int x = 0; x < inputSize; x++) {
+        final pixel = resizedImage.getPixel(x, y);
+        final mean = 127.5, std = 128.0; // Normalize
+
+        convertedBytes[pixelIndex] = (pixel.r - mean) / std;
+        convertedBytes[pixelIndex + 1] = (pixel.g - mean) / std;
+        convertedBytes[pixelIndex + 2] = (pixel.b - mean) / std;
+        pixelIndex += 3;
       }
-      return [];
     }
 
-    // Normalize the embedding
-    final embedding = List<double>.from(output[0]);
-    final normalizedEmbedding = _normalize(embedding);
-    return normalizedEmbedding;
+    return convertedBytes;
   }
 
   Float32List imageToFloat32List(
