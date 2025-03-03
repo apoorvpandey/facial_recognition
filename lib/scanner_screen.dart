@@ -34,7 +34,7 @@ class ScannerScreenState extends State<ScannerScreen> {
   Directory? tempDir;
   List? e1;
   bool _faceFound = false;
-  final TextEditingController _name = TextEditingController();
+  final _name = TextEditingController();
 
   @override
   Widget build(BuildContext context) {
@@ -79,9 +79,10 @@ class ScannerScreenState extends State<ScannerScreen> {
   Future<void> loadModel() async {
     try {
       final int numThreads = Platform.numberOfProcessors;
+      final options = InterpreterOptions()..threads = numThreads;
       _tfliteInterpreter = await Interpreter.fromAsset(
           'assets/mobile_face_net.tflite',
-          options: InterpreterOptions()..threads = numThreads);
+          options: options);
 
       _isolateInterpreter =
           await IsolateInterpreter.create(address: _tfliteInterpreter.address);
@@ -234,8 +235,8 @@ class ScannerScreenState extends State<ScannerScreen> {
     _initializeCamera();
   }
 
-  img_lib.Image _convertCameraImage(CameraImage image,
-      CameraLensDirection dir) {
+  img_lib.Image _convertCameraImage(
+      CameraImage image, CameraLensDirection dir) {
     int width = image.width;
     int height = image.height;
     // imglib -> Image package from https://pub.dartlang.org/packages/image
@@ -305,28 +306,43 @@ class ScannerScreenState extends State<ScannerScreen> {
     setState(() {
       _camera = null;
     });
+
+    final formKey = GlobalKey<FormState>();
+
     var alert = AlertDialog(
       title: Text("Add Face"),
-      content: Row(
-        children: <Widget>[
-          Expanded(
-            child: TextField(
-              controller: _name,
-              autofocus: true,
-              decoration:
-                  InputDecoration(labelText: "Name", icon: Icon(Icons.face)),
-            ),
-          )
-        ],
+      content: Form(
+        key: formKey,
+        child: Row(
+          children: <Widget>[
+            Expanded(
+              child: TextFormField(
+                controller: _name,
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return "Name cannot be empty";
+                  }
+                  return null;
+                },
+                autofocus: true,
+                decoration:
+                    InputDecoration(labelText: "Name", icon: Icon(Icons.face)),
+              ),
+            )
+          ],
+        ),
       ),
       actions: <Widget>[
         TextButton(
-            child: Text("Save"),
-            onPressed: () {
-              _handle(_name.text.toUpperCase());
+          child: Text("Save"),
+          onPressed: () {
+            if (formKey.currentState!.validate()) {
+              _handle(_name.text.trim().toUpperCase());
               _name.clear();
               Navigator.pop(context);
-            }),
+            }
+          },
+        ),
         TextButton(
           child: Text("Cancel"),
           onPressed: () {
@@ -336,16 +352,25 @@ class ScannerScreenState extends State<ScannerScreen> {
         )
       ],
     );
+
     showDialog(
-        context: context,
-        builder: (context) {
-          return alert;
-        });
+      context: context,
+      builder: (context) {
+        return alert;
+      },
+    );
   }
 
   void _handle(String text) {
     data[text] = e1;
     jsonFile!.writeAsStringSync(json.encode(data));
     _initializeCamera();
+  }
+
+  @override
+  void dispose() {
+    _isolateInterpreter.close();
+    _tfliteInterpreter.close();
+    super.dispose();
   }
 }
