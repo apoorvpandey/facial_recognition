@@ -2,19 +2,22 @@ import 'package:flutter/material.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
 
 class FaceDetectorPainter extends CustomPainter {
-  FaceDetectorPainter(this.imageSize, this.results);
+  FaceDetectorPainter(
+      this.imageSize, this.results, this.isLive, this.headPoseFeedback);
 
   final Size imageSize;
   late double scaleX;
   late double scaleY;
   late dynamic results;
+  final bool isLive;
+  final String headPoseFeedback;
 
   @override
   void paint(Canvas canvas, Size size) {
     final Paint paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3.0
-      ..color = Colors.greenAccent;
+      ..color = isLive ? Colors.greenAccent : Colors.redAccent;
 
     for (String label in results.keys) {
       for (Face face in results[label]) {
@@ -40,14 +43,24 @@ class FaceDetectorPainter extends CustomPainter {
         final centerY =
             (face.boundingBox.top + face.boundingBox.height / 2) * scaleY;
 
+        // Determine the label text
+        String labelText;
+        if (!isLive) {
+          labelText = "Spoof";
+        } else if (label == "NOT RECOGNIZED") {
+          labelText = "Unrecognized";
+        } else {
+          labelText = label;
+        }
+
         // Draw the label at the center of the bounding box
         TextSpan span = TextSpan(
           style: TextStyle(color: Colors.orange[300], fontSize: 15),
-          text: label,
+          text: labelText,
         );
         TextPainter textPainter = TextPainter(
           text: span,
-          textAlign: TextAlign.center, // Center the text
+          textAlign: TextAlign.center,
           textDirection: TextDirection.ltr,
         );
         textPainter.layout();
@@ -56,8 +69,8 @@ class FaceDetectorPainter extends CustomPainter {
         textPainter.paint(
           canvas,
           Offset(
-            centerX - textPainter.width / 2, // Center horizontally
-            centerY - textPainter.height / 2, // Center vertically
+            centerX - textPainter.width / 2,
+            centerY - textPainter.height / 2,
           ),
         );
       }
@@ -66,7 +79,9 @@ class FaceDetectorPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(FaceDetectorPainter oldDelegate) {
-    return oldDelegate.imageSize != imageSize || oldDelegate.results != results;
+    return oldDelegate.imageSize != imageSize ||
+        oldDelegate.results != results ||
+        oldDelegate.isLive != isLive;
   }
 }
 

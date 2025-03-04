@@ -10,8 +10,6 @@ import 'package:image/image.dart' as img_lib;
 
 typedef HandleDetection = Future<dynamic> Function(InputImage image);
 
-enum Choice { view, delete }
-
 Future<CameraDescription> getCamera(CameraLensDirection dir) async {
   return await availableCameras().then(
     (List<CameraDescription> cameras) => cameras.firstWhere(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -22,19 +23,27 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class ScannerScreenState extends State<ScannerScreen> {
-  File? jsonFile;
-  dynamic _scanResults;
-  late Interpreter _tfliteInterpreter; // TFLite interpreter
-  late IsolateInterpreter _isolateInterpreter; // TFLite interpreter
+  File? _faceEmbeddingsFile;
+  Multimap<String, Face>? _scanResults;
+  late Interpreter _tfliteInterpreter;
   CameraController? _camera;
   bool _isDetecting = false;
   CameraLensDirection _direction = CameraLensDirection.front;
-  dynamic data = {};
-  double threshold = 1.0;
-  Directory? tempDir;
-  List? e1;
+  Map<String, dynamic> _faceEmbeddingsMap = {};
+
+  // _faceRecognitionThreshold
+  // Stricter Matching: Lower the threshold (e.g., 0.8)
+  // Lenient Matching: Increase the threshold (e.g., 1.2)
+  final double _faceRecognitionThreshold = 1.0;
+  Directory? _tempDir;
+  List<double>? _currentFaceEmbedding;
   bool _faceFound = false;
   final _name = TextEditingController();
+  bool _isLive = false;
+  int _blinkCount = 0;
+  Timer? _blinkTimer;
+  String _headPoseFeedback = "Look straight";
+  bool _isHeadMoving = false;
 
   @override
   Widget build(BuildContext context) {
@@ -46,9 +55,10 @@ class ScannerScreenState extends State<ScannerScreen> {
       floatingActionButton:
           Column(mainAxisAlignment: MainAxisAlignment.end, children: [
         FloatingActionButton(
-          backgroundColor: (_faceFound) ? Colors.blue : Colors.blueGrey,
+          backgroundColor:
+              (_faceFound && _isLive) ? Colors.blue : Colors.blueGrey,
           onPressed: () {
-            if (_faceFound) _addLabel();
+            if (_faceFound && _isLive) _addLabel();
           },
           heroTag: null,
           child: Icon(Icons.add),
@@ -76,7 +86,7 @@ class ScannerScreenState extends State<ScannerScreen> {
     _initializeCamera();
   }
 
-  Future<void> loadModel() async {
+  Future<void> _loadModel() async {
     try {
       final int numThreads = Platform.numberOfProcessors;
       final options = InterpreterOptions()..threads = numThreads;
@@ -84,8 +94,6 @@ class ScannerScreenState extends State<ScannerScreen> {
           'assets/mobile_face_net.tflite',
           options: options);
 
-      _isolateInterpreter =
-          await IsolateInterpreter.create(address: _tfliteInterpreter.address);
       _tfliteInterpreter.allocateTensors();
 
       if (kDebugMode) {
@@ -98,8 +106,8 @@ class ScannerScreenState extends State<ScannerScreen> {
     }
   }
 
-  void _initializeCamera() async {
-    await loadModel();
+  Future<void> _initializeCamera() async {
+    await _loadModel();
     CameraDescription description = await getCamera(_direction);
 
     InputImageRotation rotation = rotationIntToImageRotation(
@@ -110,11 +118,11 @@ class ScannerScreenState extends State<ScannerScreen> {
         CameraController(description, ResolutionPreset.max, enableAudio: false);
     await _camera!.initialize();
     await Future.delayed(Duration(milliseconds: 500));
-    tempDir = await getApplicationDocumentsDirectory();
-    String embPath = '${tempDir!.path}/emb.json';
-    jsonFile = File(embPath);
-    if (jsonFile!.existsSync()) {
-      data = json.decode(jsonFile!.readAsStringSync());
+    _tempDir = await getApplicationDocumentsDirectory();
+    String embPath = '${_tempDir!.path}/emb.json';
+    _faceEmbeddingsFile = File(embPath);
+    if (_faceEmbeddingsFile!.existsSync()) {
+      _faceEmbeddingsMap = json.decode(_faceEmbeddingsFile!.readAsStringSync());
     }
 
     _camera!.startImageStream((CameraImage image) {
@@ -127,8 +135,11 @@ class ScannerScreenState extends State<ScannerScreen> {
           (dynamic result) async {
             if (result.length == 0) {
               _faceFound = false;
+              _isLive = false;
             } else {
               _faceFound = true;
+              _checkLiveStatus(result);
+              _checkHeadPose(result);
             }
             Face face;
             img_lib.Image convertedImage =
@@ -146,10 +157,7 @@ class ScannerScreenState extends State<ScannerScreen> {
                   height: h.round());
               croppedImage =
                   img_lib.copyResizeCropSquare(croppedImage, size: 112);
-              // int startTime = new DateTime.now().millisecondsSinceEpoch;
               res = _recognise(croppedImage);
-              // int endTime = new DateTime.now().millisecondsSinceEpoch;
-              // print("Inference took ${endTime - startTime}ms");
               finalResult.add(res, face);
             }
             setState(() {
@@ -170,11 +178,75 @@ class ScannerScreenState extends State<ScannerScreen> {
     });
   }
 
+  void _checkLiveStatus(List<Face> faces) {
+    for (var face in faces) {
+      if (face.leftEyeOpenProbability != null &&
+          face.rightEyeOpenProbability != null) {
+        if (face.leftEyeOpenProbability! < 0.3 &&
+            face.rightEyeOpenProbability! < 0.3) {
+          _blinkCount++;
+          if (_blinkCount >= 2) {
+            _isLive = true;
+            _blinkTimer?.cancel();
+            _blinkTimer = Timer(Duration(milliseconds: 2500), () {
+              _isLive = false;
+              _blinkCount = 0;
+              setState(() {});
+            });
+          }
+        }
+      }
+    }
+  }
+
+  void _checkHeadPose(List<Face> faces) {
+    for (var face in faces) {
+      double? yaw = face.headEulerAngleY; // Left/Right rotation
+      double? pitch = face.headEulerAngleX; // Up/Down rotation
+
+      if (yaw! > 15) {
+        setState(() {
+          _headPoseFeedback = "Turn your head left";
+        });
+      } else if (yaw < -15) {
+        setState(() {
+          _headPoseFeedback = "Turn your head right";
+        });
+      } else if (pitch! > 15) {
+        setState(() {
+          _headPoseFeedback = "Tilt your head up";
+        });
+      } else if (pitch < -15) {
+        setState(() {
+          _headPoseFeedback = "Tilt your head down";
+        });
+      } else {
+        setState(() {
+          _headPoseFeedback = "Look straight";
+        });
+      }
+
+      // Check if the user has completed the head movement
+      if ((yaw > 15 || yaw < -15 || pitch! > 15 || pitch < -15) &&
+          !_isHeadMoving) {
+        _isHeadMoving = true;
+        Timer(Duration(seconds: 2), () {
+          _isHeadMoving = false;
+          _isLive = true; // Mark as live if head movement is detected
+        });
+      }
+    }
+  }
+
   HandleDetection _getDetectionMethod() {
-    final faceDetector = GoogleMlKit.vision.faceDetector(
-      FaceDetectorOptions(
-          performanceMode: FaceDetectorMode.accurate,
-          enableClassification: true),
+    final faceDetector = FaceDetector(
+      options: FaceDetectorOptions(
+        performanceMode: FaceDetectorMode.accurate,
+        enableLandmarks: true,
+        enableContours: true,
+        enableTracking: true,
+        enableClassification: true,
+      ),
     );
     return faceDetector.processImage;
   }
@@ -192,7 +264,8 @@ class ScannerScreenState extends State<ScannerScreen> {
       _camera!.value.previewSize!.height,
       _camera!.value.previewSize!.width,
     );
-    painter = FaceDetectorPainter(imageSize, _scanResults);
+    painter = FaceDetectorPainter(
+        imageSize, _scanResults, _isLive, _headPoseFeedback);
     return CustomPaint(
       painter: painter,
     );
@@ -232,16 +305,14 @@ class ScannerScreenState extends State<ScannerScreen> {
       _camera = null;
     });
 
-    _initializeCamera();
+    await _initializeCamera();
   }
 
   img_lib.Image _convertCameraImage(
       CameraImage image, CameraLensDirection dir) {
     int width = image.width;
     int height = image.height;
-    // imglib -> Image package from https://pub.dartlang.org/packages/image
-    var img =
-        img_lib.Image(width: width, height: height); // Create Image buffer
+    var img = img_lib.Image(width: width, height: height);
 
     final int uvyButtonStride = image.planes[1].bytesPerRow;
     final int uvPixelStride = image.planes[1].bytesPerPixel!;
@@ -254,15 +325,13 @@ class ScannerScreenState extends State<ScannerScreen> {
         final yp = image.planes[0].bytes[index];
         final up = image.planes[1].bytes[uvIndex];
         final vp = image.planes[2].bytes[uvIndex];
-        // Calculate pixel color
         int r = (yp + vp * 1436 / 1024 - 179).round().clamp(0, 255);
         int g = (yp - up * 46549 / 131072 + 44 - vp * 93604 / 131072 + 91)
             .round()
             .clamp(0, 255);
         int b = (yp + up * 1814 / 1024 - 227).round().clamp(0, 255);
 
-        // Use setPixelRgba to set the pixel color
-        img.setPixelRgba(x, y, r, g, b, 255); // 255 for full opacity
+        img.setPixelRgba(x, y, r, g, b, 255);
       }
     }
 
@@ -276,30 +345,30 @@ class ScannerScreenState extends State<ScannerScreen> {
     List input = imageToByteListFloat32(img, 112, 128, 128);
     input = input.reshape([1, 112, 112, 3]);
     List output = List.filled(1 * 192, 0.0).reshape([1, 192]);
-    _isolateInterpreter.run(input, output);
+    _tfliteInterpreter.run(input, output);
     output = output.reshape([192]);
-    e1 = List.from(output); // Ensure e1 is assigned a valid list
-    return _compare(e1!).toUpperCase();
+    _currentFaceEmbedding = List.from(output);
+    return _compare(_currentFaceEmbedding!).toUpperCase();
   }
 
   String _compare(List currEmb) {
-    if (data.isEmpty) return "No Face saved";
+    if (_faceEmbeddingsMap.isEmpty) return "No Face saved";
     double minDist = 999;
-    String predRes = "NOT RECOGNIZED";
-    for (String label in data.keys) {
-      if (data[label] == null) {
-        continue; // Skip null embeddings
+    String predictedResponse = "NOT RECOGNIZED";
+    for (String label in _faceEmbeddingsMap.keys) {
+      if (_faceEmbeddingsMap[label] == null) {
+        continue;
       }
-      final currDist = euclideanDistance(data[label], currEmb);
-      if (currDist <= threshold && currDist < minDist) {
+      final currDist = euclideanDistance(_faceEmbeddingsMap[label], currEmb);
+      if (currDist <= _faceRecognitionThreshold && currDist < minDist) {
         minDist = currDist;
-        predRes = label;
+        predictedResponse = label;
       }
     }
     if (kDebugMode) {
-      print("Min Distance: $minDist, Predicted: $predRes");
+      print("Min Distance: $minDist, Predicted: $predictedResponse");
     }
-    return predRes;
+    return predictedResponse;
   }
 
   void _addLabel() {
@@ -335,19 +404,23 @@ class ScannerScreenState extends State<ScannerScreen> {
       actions: <Widget>[
         TextButton(
           child: Text("Save"),
-          onPressed: () {
+          onPressed: () async {
             if (formKey.currentState!.validate()) {
-              _handle(_name.text.trim().toUpperCase());
+              await _handle(_name.text.trim().toUpperCase());
               _name.clear();
-              Navigator.pop(context);
+              if (mounted) {
+                Navigator.pop(context);
+              }
             }
           },
         ),
         TextButton(
           child: Text("Cancel"),
-          onPressed: () {
-            _initializeCamera();
-            Navigator.pop(context);
+          onPressed: () async {
+            await _initializeCamera();
+            if (mounted) {
+              Navigator.pop(context);
+            }
           },
         )
       ],
@@ -361,16 +434,16 @@ class ScannerScreenState extends State<ScannerScreen> {
     );
   }
 
-  void _handle(String text) {
-    data[text] = e1;
-    jsonFile!.writeAsStringSync(json.encode(data));
-    _initializeCamera();
+  Future<void> _handle(String text) async {
+    _faceEmbeddingsMap[text] = _currentFaceEmbedding;
+    _faceEmbeddingsFile!.writeAsStringSync(json.encode(_faceEmbeddingsMap));
+    await _initializeCamera();
   }
 
   @override
   void dispose() {
-    _isolateInterpreter.close();
     _tfliteInterpreter.close();
+    _blinkTimer?.cancel();
     super.dispose();
   }
 }
