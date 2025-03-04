@@ -25,6 +25,14 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class ScannerScreenState extends State<ScannerScreen> {
+  late var _faceDetector = FaceDetector(
+      options: FaceDetectorOptions(
+    performanceMode: FaceDetectorMode.accurate,
+    enableLandmarks: true,
+    enableContours: true,
+    enableTracking: false,
+    enableClassification: true,
+  ));
   File? _faceEmbeddingsFile;
   Multimap<String, Face>? _scanResults;
   late Interpreter _tfliteInterpreter;
@@ -91,7 +99,8 @@ class ScannerScreenState extends State<ScannerScreen> {
 
   Future<void> _loadModel() async {
     try {
-      final int numThreads = Platform.numberOfProcessors;
+      int numCores = Platform.numberOfProcessors;
+      int numThreads = (numCores / 2).ceil(); // Use half the cores
       final options = InterpreterOptions()..threads = numThreads;
 
       if (Platform.isAndroid) {
@@ -151,7 +160,9 @@ class ScannerScreenState extends State<ScannerScreen> {
     InputImageRotation rotation = rotationIntToImageRotation(
       description.sensorOrientation,
     );
-
+    if (_camera != null) {
+      await _camera!.dispose();
+    }
     _camera =
         CameraController(description, ResolutionPreset.max, enableAudio: false);
     await _camera!.initialize();
@@ -164,55 +175,57 @@ class ScannerScreenState extends State<ScannerScreen> {
     }
 
     try {
-      _camera!.startImageStream((CameraImage image) {
+      _camera!.startImageStream((CameraImage image) async {
         if (_camera != null) {
           if (_isDetecting) return;
           _isDetecting = true;
-          String res;
-          dynamic finalResult = Multimap<String, Face>();
-          detect(image, _getDetectionMethod(), rotation, _camera).then(
-            (dynamic result) async {
-              if (result.length == 0) {
-                _faceFound = false;
-                _isLive = false;
-              } else {
-                _faceFound = true;
-                _checkLiveStatus(result);
-                _checkHeadPose(result);
-              }
-              Face face;
-              img_lib.Image convertedImage =
-                  _convertCameraImage(image, _direction);
-              for (face in result) {
-                double x, y, w, h;
-                x = (face.boundingBox.left - 10);
-                y = (face.boundingBox.top - 10);
-                w = (face.boundingBox.width + 10);
-                h = (face.boundingBox.height + 10);
-                img_lib.Image croppedImage = img_lib.copyCrop(convertedImage,
-                    x: x.round(),
-                    y: y.round(),
-                    width: w.round(),
-                    height: h.round());
-                croppedImage =
-                    img_lib.copyResizeCropSquare(croppedImage, size: 112);
-                res = _recognise(croppedImage);
-                finalResult.add(res, face);
-              }
-              setState(() {
-                _scanResults = finalResult;
-              });
 
-              _isDetecting = false;
-            },
-          ).catchError(
-            (error) {
-              if (kDebugMode) {
-                print("detectFunctionError: $error");
-              }
-              _isDetecting = false;
-            },
-          );
+          try {
+            dynamic finalResult = Multimap<String, Face>();
+            List<Face> result =
+                await detect(image, _getDetectionMethod(), rotation, _camera);
+
+            if (result.isEmpty) {
+              _faceFound = false;
+              _isLive = false;
+            } else {
+              _faceFound = true;
+              _checkLiveStatus(result);
+              _checkHeadPose(result);
+            }
+
+            img_lib.Image convertedImage =
+                _convertCameraImage(image, _direction);
+            for (Face face in result) {
+              double x = (face.boundingBox.left - 10);
+              double y = (face.boundingBox.top - 10);
+              double w = (face.boundingBox.width + 10);
+              double h = (face.boundingBox.height + 10);
+
+              img_lib.Image croppedImage = img_lib.copyCrop(
+                convertedImage,
+                x: x.round(),
+                y: y.round(),
+                width: w.round(),
+                height: h.round(),
+              );
+              croppedImage =
+                  img_lib.copyResizeCropSquare(croppedImage, size: 112);
+
+              String res = _recognise(croppedImage);
+              finalResult.add(res, face);
+            }
+
+            setState(() {
+              _scanResults = finalResult;
+            });
+          } catch (error) {
+            if (kDebugMode) {
+              print("detectFunctionError: $error");
+            }
+          } finally {
+            _isDetecting = false;
+          }
         }
       });
     } catch (error) {
@@ -284,16 +297,16 @@ class ScannerScreenState extends State<ScannerScreen> {
   }
 
   HandleDetection _getDetectionMethod() {
-    final faceDetector = FaceDetector(
+    _faceDetector = FaceDetector(
       options: FaceDetectorOptions(
         performanceMode: FaceDetectorMode.accurate,
         enableLandmarks: true,
         enableContours: true,
-        enableTracking: true,
+        enableTracking: false,
         enableClassification: true,
       ),
     );
-    return faceDetector.processImage;
+    return _faceDetector.processImage;
   }
 
   Widget _buildResults() {
@@ -343,12 +356,13 @@ class ScannerScreenState extends State<ScannerScreen> {
     } else {
       _direction = CameraLensDirection.back;
     }
-    await _camera!.stopImageStream();
-    await _camera!.dispose();
-
-    setState(() {
-      _camera = null;
-    });
+    if (_camera!.value.isStreamingImages) {
+      await _camera!.stopImageStream();
+      await _camera!.dispose();
+      setState(() {
+        _camera = null;
+      });
+    }
 
     await _initializeCamera();
   }
@@ -506,8 +520,16 @@ class ScannerScreenState extends State<ScannerScreen> {
   void dispose() {
     _tfliteInterpreter.close();
     _blinkTimer?.cancel();
-    _camera!.dispose();
+    _faceDetector.close();
+    _disposeCamera();
     _disableWakeLock();
     super.dispose();
+  }
+
+  Future<void> _disposeCamera() async {
+    if (_camera!.value.isStreamingImages) {
+      await _camera!.stopImageStream();
+      await _camera!.dispose();
+    }
   }
 }

@@ -8,7 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
 import 'package:image/image.dart' as img_lib;
 
-typedef HandleDetection = Future<dynamic> Function(InputImage image);
+typedef HandleDetection = Future<List<Face>> Function(InputImage image);
 
 Future<CameraDescription> getCamera(CameraLensDirection dir) async {
   return await availableCameras().then(
@@ -30,7 +30,7 @@ InputImageMetadata buildMetaData(
   );
 }
 
-Future<dynamic> detect(
+Future<List<Face>> detect(
   CameraImage image,
   HandleDetection handleDetection,
   InputImageRotation rotation,
@@ -117,18 +117,25 @@ InputImageRotation rotationIntToImageRotation(int rotation) {
 
 Float32List imageToByteListFloat32(
     img_lib.Image image, int inputSize, double mean, double std) {
-  var convertedBytes = Float32List(1 * inputSize * inputSize * 3);
-  var buffer = Float32List.view(convertedBytes.buffer);
-  int pixelIndex = 0;
-  for (var i = 0; i < inputSize; i++) {
-    for (var j = 0; j < inputSize; j++) {
-      var pixel = image.getPixel(j, i);
-      buffer[pixelIndex++] = (pixel.r - mean) / std;
-      buffer[pixelIndex++] = (pixel.g - mean) / std;
-      buffer[pixelIndex++] = (pixel.b - mean) / std;
+  final int len = inputSize * inputSize * 3;
+  final Uint8List byteData = Uint8List(len);
+  final Float32List floatData = Float32List(len);
+
+  int index = 0;
+  for (int y = 0; y < inputSize; y++) {
+    for (int x = 0; x < inputSize; x++) {
+      final pixel = image.getPixel(x, y);
+      byteData[index++] = pixel.r.toInt();
+      byteData[index++] = pixel.g.toInt();
+      byteData[index++] = pixel.b.toInt();
     }
   }
-  return convertedBytes.buffer.asFloat32List();
+
+  for (int i = 0; i < len; i++) {
+    floatData[i] = (byteData[i] - mean) / std;
+  }
+
+  return floatData;
 }
 
 double euclideanDistance(List e1, List e2) {
