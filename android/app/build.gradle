@@ -6,6 +6,10 @@ plugins {
 }
 
 android {
+    aaptOptions {
+        noCompress "tflite"
+        noCompress "lite"
+    }
     namespace = "com.example.facial_recognition"
     compileSdk = 35
     ndkVersion = flutter.ndkVersion

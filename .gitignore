@@ -46,3 +46,9 @@ app.*.map.json
 
 # FVM Version Cache
 .fvm/
+# Flutter/Dart development files
+.fvmrc
+devtools_options.yaml
+
+# Android build files
+android/app/.cxx/

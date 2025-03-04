@@ -11,7 +11,9 @@ import 'package:google_ml_kit/google_ml_kit.dart';
 import 'package:image/image.dart' as img_lib;
 import 'package:path_provider/path_provider.dart';
 import 'package:quiver/collection.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'face_mask_painters.dart';
 
@@ -84,20 +86,56 @@ class ScannerScreenState extends State<ScannerScreen> {
     SystemChrome.setPreferredOrientations(
         [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
     _initializeCamera();
+    _setBrightnessToMaxAndEnableWakeLock();
   }
 
   Future<void> _loadModel() async {
     try {
       final int numThreads = Platform.numberOfProcessors;
       final options = InterpreterOptions()..threads = numThreads;
+
+      if (Platform.isAndroid) {
+        try {
+          // First, try enabling NNAPI
+          options.useNnApiForAndroid = true;
+          if (kDebugMode) {
+            print("✅ NNAPI delegate enabled on Android");
+          }
+        } catch (e) {
+          if (kDebugMode) print("⚠️ NNAPI failed: $e");
+
+          // If NNAPI fails, fall back to GPU
+          try {
+            var gpuDelegateV2 = GpuDelegateV2(options: GpuDelegateOptionsV2());
+            options.addDelegate(gpuDelegateV2);
+            if (kDebugMode) print("✅ GPU delegate enabled on Android");
+          } catch (e) {
+            if (kDebugMode) print("⚠️ GPU delegate also failed, using CPU: $e");
+          }
+        }
+      }
+
+      if (Platform.isIOS) {
+        try {
+          options.useMetalDelegateForIOS = true;
+          if (kDebugMode) print("✅ Metal delegate enabled on iOS");
+        } catch (e) {
+          if (kDebugMode) {
+            print(
+                "⚠️ Failed to enable Metal delegate on iOS, falling back to CPU: $e");
+          }
+        }
+      }
+
       _tfliteInterpreter = await Interpreter.fromAsset(
-          'assets/mobile_face_net.tflite',
-          options: options);
+        'assets/mobile_face_net.tflite',
+        options: options,
+      );
 
       _tfliteInterpreter.allocateTensors();
 
       if (kDebugMode) {
-        print("✅ TFLite model loaded successfully! with $numThreads threads");
+        print("✅ TFLite model loaded successfully with $numThreads threads");
       }
     } catch (e) {
       if (kDebugMode) {
@@ -125,57 +163,64 @@ class ScannerScreenState extends State<ScannerScreen> {
       _faceEmbeddingsMap = json.decode(_faceEmbeddingsFile!.readAsStringSync());
     }
 
-    _camera!.startImageStream((CameraImage image) {
-      if (_camera != null) {
-        if (_isDetecting) return;
-        _isDetecting = true;
-        String res;
-        dynamic finalResult = Multimap<String, Face>();
-        detect(image, _getDetectionMethod(), rotation, _camera).then(
-          (dynamic result) async {
-            if (result.length == 0) {
-              _faceFound = false;
-              _isLive = false;
-            } else {
-              _faceFound = true;
-              _checkLiveStatus(result);
-              _checkHeadPose(result);
-            }
-            Face face;
-            img_lib.Image convertedImage =
-                _convertCameraImage(image, _direction);
-            for (face in result) {
-              double x, y, w, h;
-              x = (face.boundingBox.left - 10);
-              y = (face.boundingBox.top - 10);
-              w = (face.boundingBox.width + 10);
-              h = (face.boundingBox.height + 10);
-              img_lib.Image croppedImage = img_lib.copyCrop(convertedImage,
-                  x: x.round(),
-                  y: y.round(),
-                  width: w.round(),
-                  height: h.round());
-              croppedImage =
-                  img_lib.copyResizeCropSquare(croppedImage, size: 112);
-              res = _recognise(croppedImage);
-              finalResult.add(res, face);
-            }
-            setState(() {
-              _scanResults = finalResult;
-            });
+    try {
+      _camera!.startImageStream((CameraImage image) {
+        if (_camera != null) {
+          if (_isDetecting) return;
+          _isDetecting = true;
+          String res;
+          dynamic finalResult = Multimap<String, Face>();
+          detect(image, _getDetectionMethod(), rotation, _camera).then(
+            (dynamic result) async {
+              if (result.length == 0) {
+                _faceFound = false;
+                _isLive = false;
+              } else {
+                _faceFound = true;
+                _checkLiveStatus(result);
+                _checkHeadPose(result);
+              }
+              Face face;
+              img_lib.Image convertedImage =
+                  _convertCameraImage(image, _direction);
+              for (face in result) {
+                double x, y, w, h;
+                x = (face.boundingBox.left - 10);
+                y = (face.boundingBox.top - 10);
+                w = (face.boundingBox.width + 10);
+                h = (face.boundingBox.height + 10);
+                img_lib.Image croppedImage = img_lib.copyCrop(convertedImage,
+                    x: x.round(),
+                    y: y.round(),
+                    width: w.round(),
+                    height: h.round());
+                croppedImage =
+                    img_lib.copyResizeCropSquare(croppedImage, size: 112);
+                res = _recognise(croppedImage);
+                finalResult.add(res, face);
+              }
+              setState(() {
+                _scanResults = finalResult;
+              });
 
-            _isDetecting = false;
-          },
-        ).catchError(
-          (error) {
-            if (kDebugMode) {
-              print("error: $error");
-            }
-            _isDetecting = false;
-          },
-        );
+              _isDetecting = false;
+            },
+          ).catchError(
+            (error) {
+              if (kDebugMode) {
+                print("detectFunctionError: $error");
+              }
+              _isDetecting = false;
+            },
+          );
+        }
+      });
+    } catch (error) {
+      if (kDebugMode) {
+        print("startImageStreamError: $error");
+        await _initializeCamera();
       }
-    });
+    }
   }
 
   void _checkLiveStatus(List<Face> faces) {
@@ -440,10 +485,29 @@ class ScannerScreenState extends State<ScannerScreen> {
     await _initializeCamera();
   }
 
+  Future<void> _setBrightnessToMaxAndEnableWakeLock() async {
+    try {
+      await ScreenBrightness.instance.setSystemScreenBrightness(1.0);
+      WakelockPlus.toggle(enable: true);
+    } catch (e) {
+      debugPrint(e.toString());
+      throw 'Failed to set system brightness';
+    }
+  }
+
+  Future<void> _disableWakeLock() async {
+    bool wakelockEnabled = await WakelockPlus.enabled;
+    if (wakelockEnabled) {
+      WakelockPlus.toggle(enable: false);
+    }
+  }
+
   @override
   void dispose() {
     _tfliteInterpreter.close();
     _blinkTimer?.cancel();
+    _camera!.dispose();
+    _disableWakeLock();
     super.dispose();
   }
 }
