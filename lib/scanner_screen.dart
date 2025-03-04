@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:camera/camera.dart';
 import 'package:facial_recognition/utils.dart';
@@ -25,7 +26,7 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class ScannerScreenState extends State<ScannerScreen> {
-  late var _faceDetector = FaceDetector(
+  late final _faceDetector = FaceDetector(
       options: FaceDetectorOptions(
     performanceMode: FaceDetectorMode.accurate,
     enableLandmarks: true,
@@ -41,9 +42,6 @@ class ScannerScreenState extends State<ScannerScreen> {
   CameraLensDirection _direction = CameraLensDirection.front;
   Map<String, dynamic> _faceEmbeddingsMap = {};
 
-  // _faceRecognitionThreshold
-  // Stricter Matching: Lower the threshold (e.g., 0.8)
-  // Lenient Matching: Increase the threshold (e.g., 1.2)
   final double _faceRecognitionThreshold = 1.0;
   Directory? _tempDir;
   List<double>? _currentFaceEmbedding;
@@ -100,20 +98,15 @@ class ScannerScreenState extends State<ScannerScreen> {
   Future<void> _loadModel() async {
     try {
       int numCores = Platform.numberOfProcessors;
-      int numThreads = (numCores / 2).ceil(); // Use half the cores
+      int numThreads = (numCores / 2).ceil();
       final options = InterpreterOptions()..threads = numThreads;
 
       if (Platform.isAndroid) {
         try {
-          // First, try enabling NNAPI
           options.useNnApiForAndroid = true;
-          if (kDebugMode) {
-            print("✅ NNAPI delegate enabled on Android");
-          }
+          if (kDebugMode) print("✅ NNAPI delegate enabled on Android");
         } catch (e) {
           if (kDebugMode) print("⚠️ NNAPI failed: $e");
-
-          // If NNAPI fails, fall back to GPU
           try {
             var gpuDelegateV2 = GpuDelegateV2(options: GpuDelegateOptionsV2());
             options.addDelegate(gpuDelegateV2);
@@ -130,8 +123,7 @@ class ScannerScreenState extends State<ScannerScreen> {
           if (kDebugMode) print("✅ Metal delegate enabled on iOS");
         } catch (e) {
           if (kDebugMode) {
-            print(
-                "⚠️ Failed to enable Metal delegate on iOS, falling back to CPU: $e");
+            print("⚠️ Failed to enable Metal delegate on iOS: $e");
           }
         }
       }
@@ -147,92 +139,7 @@ class ScannerScreenState extends State<ScannerScreen> {
         print("✅ TFLite model loaded successfully with $numThreads threads");
       }
     } catch (e) {
-      if (kDebugMode) {
-        print("❌ Failed to load TFLite model: $e");
-      }
-    }
-  }
-
-  Future<void> _initializeCamera() async {
-    await _loadModel();
-    CameraDescription description = await getCamera(_direction);
-
-    InputImageRotation rotation = rotationIntToImageRotation(
-      description.sensorOrientation,
-    );
-    if (_camera != null) {
-      await _camera!.dispose();
-    }
-    _camera =
-        CameraController(description, ResolutionPreset.max, enableAudio: false);
-    await _camera!.initialize();
-    await Future.delayed(Duration(milliseconds: 500));
-    _tempDir = await getApplicationDocumentsDirectory();
-    String embPath = '${_tempDir!.path}/emb.json';
-    _faceEmbeddingsFile = File(embPath);
-    if (_faceEmbeddingsFile!.existsSync()) {
-      _faceEmbeddingsMap = json.decode(_faceEmbeddingsFile!.readAsStringSync());
-    }
-
-    try {
-      _camera!.startImageStream((CameraImage image) async {
-        if (_camera != null) {
-          if (_isDetecting) return;
-          _isDetecting = true;
-
-          try {
-            dynamic finalResult = Multimap<String, Face>();
-            List<Face> result =
-                await detect(image, _getDetectionMethod(), rotation, _camera);
-
-            if (result.isEmpty) {
-              _faceFound = false;
-              _isLive = false;
-            } else {
-              _faceFound = true;
-              _checkLiveStatus(result);
-              _checkHeadPose(result);
-            }
-
-            img_lib.Image convertedImage =
-                _convertCameraImage(image, _direction);
-            for (Face face in result) {
-              double x = (face.boundingBox.left - 10);
-              double y = (face.boundingBox.top - 10);
-              double w = (face.boundingBox.width + 10);
-              double h = (face.boundingBox.height + 10);
-
-              img_lib.Image croppedImage = img_lib.copyCrop(
-                convertedImage,
-                x: x.round(),
-                y: y.round(),
-                width: w.round(),
-                height: h.round(),
-              );
-              croppedImage =
-                  img_lib.copyResizeCropSquare(croppedImage, size: 112);
-
-              String res = _recognise(croppedImage);
-              finalResult.add(res, face);
-            }
-
-            setState(() {
-              _scanResults = finalResult;
-            });
-          } catch (error) {
-            if (kDebugMode) {
-              print("detectFunctionError: $error");
-            }
-          } finally {
-            _isDetecting = false;
-          }
-        }
-      });
-    } catch (error) {
-      if (kDebugMode) {
-        print("startImageStreamError: $error");
-        await _initializeCamera();
-      }
+      if (kDebugMode) print("❌ Failed to load TFLite model: $e");
     }
   }
 
@@ -296,37 +203,173 @@ class ScannerScreenState extends State<ScannerScreen> {
     }
   }
 
-  HandleDetection _getDetectionMethod() {
-    _faceDetector = FaceDetector(
-      options: FaceDetectorOptions(
-        performanceMode: FaceDetectorMode.accurate,
-        enableLandmarks: true,
-        enableContours: true,
-        enableTracking: false,
-        enableClassification: true,
-      ),
+  Future<void> _initializeCamera() async {
+    await _loadModel();
+    CameraDescription description = await getCamera(_direction);
+
+    InputImageRotation rotation = rotationIntToImageRotation(
+      description.sensorOrientation,
     );
-    return _faceDetector.processImage;
+    if (_camera != null) {
+      await _camera!.dispose();
+    }
+    _camera =
+        CameraController(description, ResolutionPreset.max, enableAudio: false);
+    await _camera!.initialize();
+    await Future.delayed(Duration(milliseconds: 500));
+    _tempDir = await getApplicationDocumentsDirectory();
+    String embPath = '${_tempDir!.path}/emb.json';
+    _faceEmbeddingsFile = File(embPath);
+    if (_faceEmbeddingsFile!.existsSync()) {
+      _faceEmbeddingsMap = json.decode(_faceEmbeddingsFile!.readAsStringSync());
+    }
+
+    try {
+      _camera!.startImageStream((CameraImage image) async {
+        if (_camera != null) {
+          if (_isDetecting) return;
+          _isDetecting = true;
+
+          try {
+            dynamic finalResult = Multimap<String, Face>();
+
+            // Get the RootIsolateToken
+            RootIsolateToken rootIsolateToken = RootIsolateToken.instance!;
+
+            // Convert CameraImage to InputImage
+            final inputImage = await _convertCameraImageToInputImage(
+                image, rotation, _camera!, rootIsolateToken);
+            if (inputImage == null) return;
+
+            // Run face detection in an isolate
+            List<Face> result =
+                await runFaceDetectionInIsolate(inputImage, rootIsolateToken);
+
+            if (result.isEmpty) {
+              _faceFound = false;
+              _isLive = false;
+            } else {
+              _faceFound = true;
+              _checkLiveStatus(result);
+              _checkHeadPose(result);
+            }
+
+            // Convert CameraImage to img_lib.Image in an isolate
+            img_lib.Image convertedImage = await convertCameraImageInIsolate(
+                image, _direction, rootIsolateToken);
+
+            for (Face face in result) {
+              double x = (face.boundingBox.left - 10);
+              double y = (face.boundingBox.top - 10);
+              double w = (face.boundingBox.width + 10);
+              double h = (face.boundingBox.height + 10);
+
+              img_lib.Image croppedImage = img_lib.copyCrop(
+                convertedImage,
+                x: x.round(),
+                y: y.round(),
+                width: w.round(),
+                height: h.round(),
+              );
+              croppedImage =
+                  img_lib.copyResizeCropSquare(croppedImage, size: 112);
+
+              // Run TensorFlow Lite inference in an isolate
+              List<double> embedding = await recogniseInIsolate(
+                  croppedImage, _tfliteInterpreter, rootIsolateToken);
+              _currentFaceEmbedding = List.from(embedding);
+              String res = _compare(embedding).toUpperCase();
+              finalResult.add(res, face);
+            }
+
+            setState(() {
+              _scanResults = finalResult;
+            });
+          } catch (error) {
+            if (kDebugMode) print("detectFunctionError: $error");
+          } finally {
+            _isDetecting = false;
+          }
+        }
+      });
+    } catch (error) {
+      if (kDebugMode) print("startImageStreamError: $error");
+      await _initializeCamera();
+    }
   }
 
-  Widget _buildResults() {
-    const Text noResultsText = Text('');
-    if (_scanResults == null ||
-        _camera == null ||
-        !_camera!.value.isInitialized) {
-      return noResultsText;
-    }
-    CustomPainter painter;
+  Future<img_lib.Image> convertCameraImageInIsolate(CameraImage image,
+      CameraLensDirection dir, RootIsolateToken rootIsolateToken) async {
+    return await Isolate.run<img_lib.Image>(() {
+      // Initialize BackgroundIsolateBinaryMessenger
+      BackgroundIsolateBinaryMessenger.ensureInitialized(rootIsolateToken);
 
-    final Size imageSize = Size(
-      _camera!.value.previewSize!.height,
-      _camera!.value.previewSize!.width,
-    );
-    painter = FaceDetectorPainter(
-        imageSize, _scanResults, _isLive, _headPoseFeedback);
-    return CustomPaint(
-      painter: painter,
-    );
+      int width = image.width;
+      int height = image.height;
+      var img = img_lib.Image(width: width, height: height);
+
+      final int uvyButtonStride = image.planes[1].bytesPerRow;
+      final int uvPixelStride = image.planes[1].bytesPerPixel!;
+
+      for (int x = 0; x < width; x++) {
+        for (int y = 0; y < height; y++) {
+          final int uvIndex = uvPixelStride * (x / 2).floor() +
+              uvyButtonStride * (y / 2).floor();
+          final int index = y * width + x;
+          final yp = image.planes[0].bytes[index];
+          final up = image.planes[1].bytes[uvIndex];
+          final vp = image.planes[2].bytes[uvIndex];
+          int r = (yp + vp * 1436 / 1024 - 179).round().clamp(0, 255);
+          int g = (yp - up * 46549 / 131072 + 44 - vp * 93604 / 131072 + 91)
+              .round()
+              .clamp(0, 255);
+          int b = (yp + up * 1814 / 1024 - 227).round().clamp(0, 255);
+
+          img.setPixelRgba(x, y, r, g, b, 255);
+        }
+      }
+
+      var img1 = (dir == CameraLensDirection.front)
+          ? img_lib.copyRotate(img, angle: -90)
+          : img_lib.copyRotate(img, angle: 90);
+      return img1;
+    });
+  }
+
+  Future<List<Face>> runFaceDetectionInIsolate(
+      InputImage inputImage, RootIsolateToken rootIsolateToken) async {
+    return await Isolate.run<List<Face>>(() async {
+      // Initialize BackgroundIsolateBinaryMessenger
+      BackgroundIsolateBinaryMessenger.ensureInitialized(rootIsolateToken);
+
+      final FaceDetector faceDetector = FaceDetector(
+        options: FaceDetectorOptions(
+          enableContours: true,
+          enableLandmarks: true,
+          enableTracking: true,
+          enableClassification: true,
+        ),
+      );
+
+      final faces = await faceDetector.processImage(inputImage);
+      await faceDetector.close();
+      return faces;
+    });
+  }
+
+  Future<List<double>> recogniseInIsolate(img_lib.Image img,
+      Interpreter interpreter, RootIsolateToken rootIsolateToken) async {
+    return await Isolate.run<List<double>>(() {
+      // Initialize BackgroundIsolateBinaryMessenger
+      BackgroundIsolateBinaryMessenger.ensureInitialized(rootIsolateToken);
+
+      List input = imageToByteListFloat32(img, 112, 128, 128);
+      input = input.reshape([1, 112, 112, 3]);
+      List output = List.filled(1 * 192, 0.0).reshape([1, 192]);
+      interpreter.run(input, output);
+      output = output.reshape([192]);
+      return List.from(output);
+    });
   }
 
   Widget _buildImage() {
@@ -350,64 +393,24 @@ class ScannerScreenState extends State<ScannerScreen> {
     );
   }
 
-  void _toggleCameraDirection() async {
-    if (_direction == CameraLensDirection.back) {
-      _direction = CameraLensDirection.front;
-    } else {
-      _direction = CameraLensDirection.back;
+  Widget _buildResults() {
+    const Text noResultsText = Text('');
+    if (_scanResults == null ||
+        _camera == null ||
+        !_camera!.value.isInitialized) {
+      return noResultsText;
     }
-    if (_camera!.value.isStreamingImages) {
-      await _camera!.stopImageStream();
-      await _camera!.dispose();
-      setState(() {
-        _camera = null;
-      });
-    }
+    CustomPainter painter;
 
-    await _initializeCamera();
-  }
-
-  img_lib.Image _convertCameraImage(
-      CameraImage image, CameraLensDirection dir) {
-    int width = image.width;
-    int height = image.height;
-    var img = img_lib.Image(width: width, height: height);
-
-    final int uvyButtonStride = image.planes[1].bytesPerRow;
-    final int uvPixelStride = image.planes[1].bytesPerPixel!;
-
-    for (int x = 0; x < width; x++) {
-      for (int y = 0; y < height; y++) {
-        final int uvIndex =
-            uvPixelStride * (x / 2).floor() + uvyButtonStride * (y / 2).floor();
-        final int index = y * width + x;
-        final yp = image.planes[0].bytes[index];
-        final up = image.planes[1].bytes[uvIndex];
-        final vp = image.planes[2].bytes[uvIndex];
-        int r = (yp + vp * 1436 / 1024 - 179).round().clamp(0, 255);
-        int g = (yp - up * 46549 / 131072 + 44 - vp * 93604 / 131072 + 91)
-            .round()
-            .clamp(0, 255);
-        int b = (yp + up * 1814 / 1024 - 227).round().clamp(0, 255);
-
-        img.setPixelRgba(x, y, r, g, b, 255);
-      }
-    }
-
-    var img1 = (dir == CameraLensDirection.front)
-        ? img_lib.copyRotate(img, angle: -90)
-        : img_lib.copyRotate(img, angle: 90);
-    return img1;
-  }
-
-  String _recognise(img_lib.Image img) {
-    List input = imageToByteListFloat32(img, 112, 128, 128);
-    input = input.reshape([1, 112, 112, 3]);
-    List output = List.filled(1 * 192, 0.0).reshape([1, 192]);
-    _tfliteInterpreter.run(input, output);
-    output = output.reshape([192]);
-    _currentFaceEmbedding = List.from(output);
-    return _compare(_currentFaceEmbedding!).toUpperCase();
+    final Size imageSize = Size(
+      _camera!.value.previewSize!.height,
+      _camera!.value.previewSize!.width,
+    );
+    painter = FaceDetectorPainter(
+        imageSize, _scanResults, _isLive, _headPoseFeedback);
+    return CustomPaint(
+      painter: painter,
+    );
   }
 
   String _compare(List currEmb) {
@@ -428,6 +431,119 @@ class ScannerScreenState extends State<ScannerScreen> {
       print("Min Distance: $minDist, Predicted: $predictedResponse");
     }
     return predictedResponse;
+  }
+
+  Future<InputImage?> _convertCameraImageToInputImage(
+      CameraImage cameraImage,
+      InputImageRotation imageRotation,
+      CameraController cameraController,
+      RootIsolateToken rootIsolateToken) async {
+    return await Isolate.run<InputImage?>(() {
+      // Initialize BackgroundIsolateBinaryMessenger
+      BackgroundIsolateBinaryMessenger.ensureInitialized(rootIsolateToken);
+
+      try {
+        final InputImageFormat format = Platform.isAndroid
+            ? InputImageFormat.nv21
+            : InputImageFormat.bgra8888;
+
+        if (Platform.isAndroid &&
+            cameraImage.format.group == ImageFormatGroup.yuv420) {
+          final WriteBuffer allBytes = WriteBuffer();
+          for (final Plane plane in cameraImage.planes) {
+            allBytes.putUint8List(plane.bytes);
+          }
+          final bytes = allBytes.done().buffer.asUint8List();
+
+          return InputImage.fromBytes(
+            bytes: bytes,
+            metadata: InputImageMetadata(
+              size: Size(
+                  cameraImage.width.toDouble(), cameraImage.height.toDouble()),
+              rotation: imageRotation,
+              format: format,
+              bytesPerRow: cameraImage.planes.first.bytesPerRow,
+            ),
+          );
+        }
+
+        if (cameraImage.planes.length != 1) {
+          if (kDebugMode) {
+            print(
+                "❌ Unsupported number of planes: ${cameraImage.planes.length}");
+          }
+          return null;
+        }
+
+        final Plane plane = cameraImage.planes.first;
+        return InputImage.fromBytes(
+          bytes: plane.bytes,
+          metadata: InputImageMetadata(
+            size: Size(
+                cameraImage.width.toDouble(), cameraImage.height.toDouble()),
+            rotation: imageRotation,
+            format: format,
+            bytesPerRow: plane.bytesPerRow,
+          ),
+        );
+      } catch (e) {
+        if (kDebugMode) {
+          print("❌ Error converting CameraImage to InputImage: $e");
+        }
+        return null;
+      }
+    });
+  }
+
+  Future<void> _setBrightnessToMaxAndEnableWakeLock() async {
+    try {
+      await ScreenBrightness.instance.setSystemScreenBrightness(1.0);
+      WakelockPlus.toggle(enable: true);
+    } catch (e) {
+      debugPrint(e.toString());
+      throw 'Failed to set system brightness';
+    }
+  }
+
+  Future<void> _disableWakeLock() async {
+    bool wakelockEnabled = await WakelockPlus.enabled;
+    if (wakelockEnabled) {
+      WakelockPlus.toggle(enable: false);
+    }
+  }
+
+  Future<void> _disposeCamera() async {
+    if (_camera!.value.isStreamingImages) {
+      await _camera!.stopImageStream();
+      await _camera!.dispose();
+    }
+  }
+
+  @override
+  void dispose() {
+    _tfliteInterpreter.close();
+    _blinkTimer?.cancel();
+    _faceDetector.close();
+    _disposeCamera();
+    _disableWakeLock();
+    super.dispose();
+  }
+
+  void _toggleCameraDirection() async {
+    if (_direction == CameraLensDirection.back) {
+      _direction = CameraLensDirection.front;
+    } else {
+      _direction = CameraLensDirection.back;
+    }
+    if (_camera!.value.isStreamingImages) {
+      await _camera!.stopImageStream();
+      await _camera!.dispose();
+      setState(() {
+        _camera = null;
+      });
+    }
+
+    await _initializeCamera();
   }
 
   void _addLabel() {
@@ -497,39 +613,5 @@ class ScannerScreenState extends State<ScannerScreen> {
     _faceEmbeddingsMap[text] = _currentFaceEmbedding;
     _faceEmbeddingsFile!.writeAsStringSync(json.encode(_faceEmbeddingsMap));
     await _initializeCamera();
-  }
-
-  Future<void> _setBrightnessToMaxAndEnableWakeLock() async {
-    try {
-      await ScreenBrightness.instance.setSystemScreenBrightness(1.0);
-      WakelockPlus.toggle(enable: true);
-    } catch (e) {
-      debugPrint(e.toString());
-      throw 'Failed to set system brightness';
-    }
-  }
-
-  Future<void> _disableWakeLock() async {
-    bool wakelockEnabled = await WakelockPlus.enabled;
-    if (wakelockEnabled) {
-      WakelockPlus.toggle(enable: false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _tfliteInterpreter.close();
-    _blinkTimer?.cancel();
-    _faceDetector.close();
-    _disposeCamera();
-    _disableWakeLock();
-    super.dispose();
-  }
-
-  Future<void> _disposeCamera() async {
-    if (_camera!.value.isStreamingImages) {
-      await _camera!.stopImageStream();
-      await _camera!.dispose();
-    }
   }
 }
