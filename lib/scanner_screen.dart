@@ -23,14 +23,6 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class ScannerScreenState extends State<ScannerScreen> {
-  late final _faceDetector = FaceDetector(
-      options: FaceDetectorOptions(
-    performanceMode: FaceDetectorMode.accurate,
-    enableLandmarks: true,
-    enableContours: true,
-    enableTracking: false,
-    enableClassification: true,
-  ));
   File? _faceEmbeddingsFile;
   Multimap<String, Face>? _scanResults;
   late Interpreter _tfliteInterpreter;
@@ -369,7 +361,6 @@ class ScannerScreenState extends State<ScannerScreen> {
   void dispose() {
     _tfliteInterpreter.close();
     _blinkTimer?.cancel();
-    _faceDetector.close();
     _disposeCamera();
     Utils.disableWakeLock();
     super.dispose();
