@@ -43,7 +43,6 @@ dependencies:
   google_mlkit_commons: ^0.9.0
   path_provider: ^2.1.5
   quiver: ^3.2.2
-  screen_brightness: ^2.1.1
   wakelock_plus: ^1.2.10
 
 dev_dependencies:

@@ -81,7 +81,6 @@ class ScannerScreenState extends State<ScannerScreen> {
     SystemChrome.setPreferredOrientations(
         [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
     _initializeCamera();
-    Utils.setBrightnessToMaxAndEnableWakeLock();
   }
 
   Future<void> _loadModel() async {
@@ -362,7 +361,6 @@ class ScannerScreenState extends State<ScannerScreen> {
     _tfliteInterpreter.close();
     _blinkTimer?.cancel();
     _disposeCamera();
-    Utils.disableWakeLock();
     super.dispose();
   }
 

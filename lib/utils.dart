@@ -8,9 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:google_ml_kit/google_ml_kit.dart';
 import 'package:image/image.dart' as img_lib;
-import 'package:screen_brightness/screen_brightness.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 
 class Utils {
   static Future<CameraDescription> getCamera(CameraLensDirection dir) async {
@@ -200,22 +198,5 @@ class Utils {
       await faceDetector.close();
       return faces;
     });
-  }
-
-  static Future<void> setBrightnessToMaxAndEnableWakeLock() async {
-    try {
-      await ScreenBrightness.instance.setSystemScreenBrightness(1.0);
-      WakelockPlus.toggle(enable: true);
-    } catch (e) {
-      debugPrint(e.toString());
-      throw 'Failed to set system brightness';
-    }
-  }
-
-  static Future<void> disableWakeLock() async {
-    bool wakelockEnabled = await WakelockPlus.enabled;
-    if (wakelockEnabled) {
-      WakelockPlus.toggle(enable: false);
-    }
   }
 }
