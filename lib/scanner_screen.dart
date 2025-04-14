@@ -23,430 +23,410 @@ class ScannerScreen extends StatefulWidget {
 }
 
 class ScannerScreenState extends State<ScannerScreen> {
+  // Constants
+  static const _faceRecognitionThreshold = 1.0;
+  static const _clearnessThreshold = 1000;
+  static const _livenessThreshold = 0.2;
+  static const _laplaceThreshold = 50;
+  static const _modelAssetPath = 'assets/mobile_face_net.tflite';
+  static const _antiSpoofingModelPath = 'assets/face_anti_spoofing.tflite';
+  static const _embeddingsFileName = 'emb.json';
+  static const _cameraResolution = ResolutionPreset.high;
+
+  // State variables
   File? _faceEmbeddingsFile;
   Multimap<String, Face>? _scanResults;
   late Interpreter _tfliteInterpreter;
-  CameraController? _camera;
+  CameraController? _cameraController;
   bool _isDetecting = false;
   CameraLensDirection _direction = CameraLensDirection.front;
   Map<String, dynamic> _faceEmbeddingsMap = {};
-
-  final double _faceRecognitionThreshold = 1.0;
-  Directory? _tempDir;
   List<double>? _currentFaceEmbedding;
   bool _faceFound = false;
-  final _name = TextEditingController();
   bool _isLive = false;
-  int _blinkCount = 0;
-  Timer? _blinkTimer;
-  String _headPoseFeedback = "Look straight";
-  bool _isHeadMoving = false;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Face Recognition'),
-      ),
-      body: _buildImage(),
-      floatingActionButton:
-          Column(mainAxisAlignment: MainAxisAlignment.end, children: [
-        FloatingActionButton(
-          backgroundColor:
-              (_faceFound && _isLive) ? Colors.blue : Colors.blueGrey,
-          onPressed: () {
-            if (_faceFound && _isLive) _addLabel();
-          },
-          heroTag: null,
-          child: Icon(Icons.add),
-        ),
-        SizedBox(
-          height: 10,
-        ),
-        FloatingActionButton(
-          onPressed: _toggleCameraDirection,
-          heroTag: null,
-          child: _direction == CameraLensDirection.back
-              ? const Icon(Icons.camera_front)
-              : const Icon(Icons.camera_rear),
-        ),
-      ]),
-    );
-  }
+  final _nameController = TextEditingController();
+  late final Interpreter _antiSpoofingInterpreter;
+  Directory? _tempDir;
+  RootIsolateToken? _rootIsolateToken;
 
   @override
   void initState() {
     super.initState();
-
-    SystemChrome.setPreferredOrientations(
-        [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
-    _initializeCamera();
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+    _initializeApp();
   }
 
-  Future<void> _loadModel() async {
+  Future<void> _initializeApp() async {
+    await _loadModels();
+    await _initializeCamera();
+    await _loadFaceEmbeddings();
+  }
+
+  Future<void> _loadModels() async {
     try {
-      int numCores = Platform.numberOfProcessors;
-      int numThreads = (numCores / 2).ceil();
-      final options = InterpreterOptions()..threads = numThreads;
+      final options = InterpreterOptions()
+        ..threads = (Platform.numberOfProcessors / 2).ceil()
+        ..useNnApiForAndroid = Platform.isAndroid
+        ..useMetalDelegateForIOS = Platform.isIOS;
 
-      if (Platform.isAndroid) {
-        try {
-          options.useNnApiForAndroid = true;
-          if (kDebugMode) print("✅ NNAPI delegate enabled on Android");
-        } catch (e) {
-          if (kDebugMode) print("⚠️ NNAPI failed: $e");
-          try {
-            var gpuDelegateV2 = GpuDelegateV2(options: GpuDelegateOptionsV2());
-            options.addDelegate(gpuDelegateV2);
-            if (kDebugMode) print("✅ GPU delegate enabled on Android");
-          } catch (e) {
-            if (kDebugMode) print("⚠️ GPU delegate also failed, using CPU: $e");
-          }
-        }
-      }
-
-      if (Platform.isIOS) {
-        try {
-          options.useMetalDelegateForIOS = true;
-          if (kDebugMode) print("✅ Metal delegate enabled on iOS");
-        } catch (e) {
-          if (kDebugMode) {
-            print("⚠️ Failed to enable Metal delegate on iOS: $e");
-          }
-        }
-      }
-
-      _tfliteInterpreter = await Interpreter.fromAsset(
-        'assets/mobile_face_net.tflite',
-        options: options,
-      );
-
-      _tfliteInterpreter.allocateTensors();
-
-      if (kDebugMode) {
-        print("✅ TFLite model loaded successfully with $numThreads threads");
-      }
+      await Future.wait([
+        _loadFaceRecognitionModel(options),
+        _loadAntiSpoofingModel(),
+      ]);
     } catch (e) {
-      if (kDebugMode) print("❌ Failed to load TFLite model: $e");
+      debugPrint("❌ Failed to load models: $e");
     }
   }
 
-  void _checkLiveStatus(List<Face> faces) {
-    for (var face in faces) {
-      if (face.leftEyeOpenProbability != null &&
-          face.rightEyeOpenProbability != null) {
-        if (face.leftEyeOpenProbability! < 0.3 &&
-            face.rightEyeOpenProbability! < 0.3) {
-          _blinkCount++;
-          if (_blinkCount >= 2) {
-            _isLive = true;
-            _blinkTimer?.cancel();
-            _blinkTimer = Timer(Duration(milliseconds: 2500), () {
-              _isLive = false;
-              _blinkCount = 0;
-              setState(() {});
-            });
-          }
-        }
-      }
-    }
+  Future<void> _loadFaceRecognitionModel(InterpreterOptions options) async {
+    _tfliteInterpreter =
+        await Interpreter.fromAsset(_modelAssetPath, options: options);
+    _tfliteInterpreter.allocateTensors();
   }
 
-  void _checkHeadPose(List<Face> faces) {
-    for (var face in faces) {
-      double? yaw = face.headEulerAngleY; // Left/Right rotation
-      double? pitch = face.headEulerAngleX; // Up/Down rotation
+  Future<void> _loadAntiSpoofingModel() async {
+    _antiSpoofingInterpreter =
+        await Interpreter.fromAsset(_antiSpoofingModelPath);
+  }
 
-      if (yaw! > 15) {
-        setState(() {
-          _headPoseFeedback = "Turn your head left";
-        });
-      } else if (yaw < -15) {
-        setState(() {
-          _headPoseFeedback = "Turn your head right";
-        });
-      } else if (pitch! > 15) {
-        setState(() {
-          _headPoseFeedback = "Tilt your head up";
-        });
-      } else if (pitch < -15) {
-        setState(() {
-          _headPoseFeedback = "Tilt your head down";
-        });
-      } else {
-        setState(() {
-          _headPoseFeedback = "Look straight";
-        });
-      }
+  Future<void> _loadFaceEmbeddings() async {
+    _tempDir ??= await getApplicationDocumentsDirectory();
+    _faceEmbeddingsFile = File('${_tempDir!.path}/$_embeddingsFileName');
 
-      // Check if the user has completed the head movement
-      if ((yaw > 15 || yaw < -15 || pitch! > 15 || pitch < -15) &&
-          !_isHeadMoving) {
-        _isHeadMoving = true;
-        Timer(Duration(seconds: 2), () {
-          _isHeadMoving = false;
-          _isLive = true; // Mark as live if head movement is detected
-        });
+    if (_faceEmbeddingsFile!.existsSync()) {
+      try {
+        final content = await _faceEmbeddingsFile!.readAsString();
+        _faceEmbeddingsMap = json.decode(content);
+      } catch (e) {
+        debugPrint("Error loading face embeddings: $e");
       }
     }
   }
 
   Future<void> _initializeCamera() async {
-    await _loadModel();
-    CameraDescription description = await Utils.getCamera(_direction);
-
-    InputImageRotation rotation = Utils.rotationIntToImageRotation(
-      description.sensorOrientation,
-    );
-    if (_camera != null) {
-      await _camera!.dispose();
-    }
-    _camera =
-        CameraController(description, ResolutionPreset.max, enableAudio: false);
-    await _camera!.initialize();
-    await Future.delayed(Duration(milliseconds: 500));
-    _tempDir = await getApplicationDocumentsDirectory();
-    String embPath = '${_tempDir!.path}/emb.json';
-    _faceEmbeddingsFile = File(embPath);
-    if (_faceEmbeddingsFile!.existsSync()) {
-      _faceEmbeddingsMap = json.decode(_faceEmbeddingsFile!.readAsStringSync());
-    }
-
     try {
-      _camera!.startImageStream((CameraImage image) async {
-        if (_camera != null) {
-          if (_isDetecting) return;
-          _isDetecting = true;
+      final description = await Utils.getCamera(_direction);
+      Utils.rotationIntToImageRotation(description.sensorOrientation);
 
-          try {
-            dynamic finalResult = Multimap<String, Face>();
+      await _cameraController?.dispose();
 
-            // Get the RootIsolateToken
-            RootIsolateToken rootIsolateToken = RootIsolateToken.instance!;
+      _cameraController = CameraController(
+        description,
+        _cameraResolution,
+        enableAudio: false,
+      );
 
-            // Convert CameraImage to InputImage
-            final inputImage = await Utils.convertCameraImageToInputImage(
-                image, rotation, _camera!, rootIsolateToken);
-            if (inputImage == null) return;
+      await _cameraController!.initialize();
+      await Future.delayed(const Duration(milliseconds: 300));
 
-            // Run face detection in an isolate
-            List<Face> result = await Utils.runFaceDetectionInIsolate(
-                inputImage, rootIsolateToken);
+      _rootIsolateToken = RootIsolateToken.instance;
 
-            if (result.isEmpty) {
-              _faceFound = false;
-              _isLive = false;
-            } else {
-              _faceFound = true;
-              _checkLiveStatus(result);
-              _checkHeadPose(result);
-            }
-
-            // Convert CameraImage to img_lib.Image in an isolate
-            img_lib.Image convertedImage =
-                await Utils.convertCameraImageInIsolate(
-                    image, _direction, rootIsolateToken);
-
-            for (Face face in result) {
-              double x = (face.boundingBox.left - 10);
-              double y = (face.boundingBox.top - 10);
-              double w = (face.boundingBox.width + 10);
-              double h = (face.boundingBox.height + 10);
-
-              img_lib.Image croppedImage = img_lib.copyCrop(
-                convertedImage,
-                x: x.round(),
-                y: y.round(),
-                width: w.round(),
-                height: h.round(),
-              );
-              croppedImage =
-                  img_lib.copyResizeCropSquare(croppedImage, size: 112);
-
-              // Run TensorFlow Lite inference in an isolate
-              List<double> embedding = await Utils.recogniseInIsolate(
-                  croppedImage, _tfliteInterpreter, rootIsolateToken);
-              _currentFaceEmbedding = List.from(embedding);
-              String res = _compare(embedding).toUpperCase();
-              finalResult.add(res, face);
-            }
-
-            setState(() {
-              _scanResults = finalResult;
-            });
-          } catch (error) {
-            if (kDebugMode) print("detectFunctionError: $error");
-          } finally {
-            _isDetecting = false;
-          }
-        }
-      });
-    } catch (error) {
-      if (kDebugMode) print("startImageStreamError: $error");
+      _cameraController!.startImageStream(_processCameraImage);
+    } catch (e) {
+      debugPrint("Camera initialization error: $e");
+      await Future.delayed(const Duration(seconds: 1));
       await _initializeCamera();
     }
   }
 
-  Widget _buildImage() {
-    if (_camera == null || !_camera!.value.isInitialized) {
-      return Center(
-        child: CircularProgressIndicator(),
+  Future<void> _processCameraImage(CameraImage image) async {
+    if (_isDetecting || _cameraController == null) return;
+
+    _isDetecting = true;
+    try {
+      final rotation = Utils.rotationIntToImageRotation(
+        _cameraController!.description.sensorOrientation,
       );
+
+      final inputImage = await Utils.convertCameraImageToInputImage(
+        image,
+        rotation,
+        _cameraController!,
+        _rootIsolateToken!,
+      );
+
+      if (inputImage == null) return;
+
+      final faces = await Utils.runFaceDetectionInIsolate(
+        inputImage,
+        _rootIsolateToken!,
+      );
+
+      _faceFound = faces.isNotEmpty;
+      final convertedImage = await Utils.convertCameraImageInIsolate(
+        image,
+        _direction,
+        _rootIsolateToken!,
+      );
+
+      final results = await _processFaces(faces, convertedImage);
+
+      if (mounted) {
+        setState(() => _scanResults = results);
+      }
+    } catch (e) {
+      debugPrint("Image processing error: $e");
+    } finally {
+      _isDetecting = false;
+    }
+  }
+
+  Future<Multimap<String, Face>> _processFaces(
+    List<Face> faces,
+    img_lib.Image convertedImage,
+  ) async {
+    final results = Multimap<String, Face>();
+
+    for (final face in faces) {
+      final croppedFace = _cropAndResizeFace(convertedImage, face);
+
+      final isFraud = await antiSpoofing(croppedFace);
+      _isLive = !isFraud;
+      debugPrint('isLive: $_isLive');
+
+      final embedding = await Utils.recogniseInIsolate(
+        croppedFace,
+        _tfliteInterpreter,
+        _rootIsolateToken!,
+      );
+
+      _currentFaceEmbedding = List.from(embedding);
+      final label = _compare(embedding).toUpperCase();
+      results.add(label, face);
     }
 
-    return Container(
-      constraints: const BoxConstraints.expand(),
-      child: _camera == null
-          ? const SizedBox.shrink()
-          : Stack(
-              fit: StackFit.expand,
-              children: <Widget>[
-                CameraPreview(_camera!),
-                _buildResults(),
-              ],
-            ),
+    return results;
+  }
+
+  img_lib.Image _cropAndResizeFace(img_lib.Image image, Face face) {
+    final rect = face.boundingBox;
+    final x = (rect.left - 10).round();
+    final y = (rect.top - 10).round();
+    final w = (rect.width + 10).round();
+    final h = (rect.height + 10).round();
+
+    return img_lib.copyResizeCropSquare(
+      img_lib.copyCrop(image, x: x, y: y, width: w, height: h),
+      size: 112,
     );
   }
 
-  Widget _buildResults() {
-    const Text noResultsText = Text('');
-    if (_scanResults == null ||
-        _camera == null ||
-        !_camera!.value.isInitialized) {
-      return noResultsText;
-    }
-    CustomPainter painter;
-
-    final Size imageSize = Size(
-      _camera!.value.previewSize!.height,
-      _camera!.value.previewSize!.width,
-    );
-    painter = FaceDetectorPainter(
-        imageSize, _scanResults, _isLive, _headPoseFeedback);
-    return CustomPaint(
-      painter: painter,
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Face Recognition')),
+      body: _buildCameraPreview(),
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            backgroundColor:
+                (_faceFound && _isLive) ? Colors.blue : Colors.blueGrey,
+            onPressed: _faceFound && _isLive ? _addLabel : null,
+            child: const Icon(Icons.add),
+          ),
+          const SizedBox(height: 10),
+          FloatingActionButton(
+            onPressed: _toggleCameraDirection,
+            child: Icon(_direction == CameraLensDirection.back
+                ? Icons.camera_front
+                : Icons.camera_rear),
+          ),
+        ],
+      ),
     );
   }
 
-  String _compare(List currEmb) {
+  Widget _buildCameraPreview() {
+    if (_cameraController == null || !_cameraController!.value.isInitialized) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CameraPreview(_cameraController!),
+        if (_scanResults != null && _cameraController!.value.isInitialized)
+          CustomPaint(
+            painter: FaceDetectorPainter(
+                Size(
+                  _cameraController!.value.previewSize!.height,
+                  _cameraController!.value.previewSize!.width,
+                ),
+                _scanResults,
+                _isLive),
+          ),
+      ],
+    );
+  }
+
+  String _compare(List<double> currentEmbedding) {
     if (_faceEmbeddingsMap.isEmpty) return "No Face saved";
-    double minDist = 999;
-    String predictedResponse = "NOT RECOGNIZED";
-    for (String label in _faceEmbeddingsMap.keys) {
-      if (_faceEmbeddingsMap[label] == null) {
-        continue;
+
+    double minDist = double.infinity;
+    String predictedLabel = "NOT RECOGNIZED";
+
+    _faceEmbeddingsMap.forEach((label, savedEmbedding) {
+      final distance =
+          Utils.euclideanDistance(savedEmbedding, currentEmbedding);
+      if (distance <= _faceRecognitionThreshold && distance < minDist) {
+        minDist = distance;
+        predictedLabel = label;
       }
-      final currDist =
-          Utils.euclideanDistance(_faceEmbeddingsMap[label], currEmb);
-      if (currDist <= _faceRecognitionThreshold && currDist < minDist) {
-        minDist = currDist;
-        predictedResponse = label;
-      }
-    }
-    if (kDebugMode) {
-      print("Min Distance: $minDist, Predicted: $predictedResponse");
-    }
-    return predictedResponse;
+    });
+
+    return predictedLabel;
+  }
+
+  Future<void> _toggleCameraDirection() async {
+    _direction = _direction == CameraLensDirection.back
+        ? CameraLensDirection.front
+        : CameraLensDirection.back;
+
+    await _disposeCamera();
+    await _initializeCamera();
   }
 
   Future<void> _disposeCamera() async {
-    if (_camera!.value.isStreamingImages) {
-      await _camera!.stopImageStream();
-      await _camera!.dispose();
+    if (_cameraController?.value.isStreamingImages ?? false) {
+      await _cameraController?.stopImageStream();
+      await _cameraController?.dispose();
+      _cameraController = null;
     }
+  }
+
+  void _addLabel() {
+    setState(() => _cameraController = null);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Add Face"),
+        content: Form(
+          key: GlobalKey<FormState>(),
+          child: TextFormField(
+            controller: _nameController,
+            validator: (value) =>
+                value?.trim().isEmpty ?? true ? "Name cannot be empty" : null,
+            decoration: const InputDecoration(
+              labelText: "Name",
+              icon: Icon(Icons.face),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            child: const Text("Save"),
+            onPressed: () =>
+                _saveFace(_nameController.text.trim().toUpperCase()),
+          ),
+          TextButton(
+            child: const Text("Cancel"),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _saveFace(String name) async {
+    if (name.isEmpty) return;
+
+    _faceEmbeddingsMap[name] = _currentFaceEmbedding;
+    await _faceEmbeddingsFile!.writeAsString(json.encode(_faceEmbeddingsMap));
+
+    if (mounted) {
+      Navigator.pop(context);
+      await _initializeCamera();
+    }
+
+    _nameController.clear();
+  }
+
+  Future<bool> antiSpoofing(img_lib.Image image) async {
+    final clearness = _calculateLaplacian(image);
+    if (clearness < _clearnessThreshold) return true;
+
+    final livenessScore = await _calculateLiveness(image);
+    if (livenessScore > _livenessThreshold) return true;
+
+    return false;
+  }
+
+  int _calculateLaplacian(img_lib.Image image) {
+    const laplaceKernel = [
+      [0, 1, 0],
+      [1, -4, 1],
+      [0, 1, 0]
+    ];
+
+    final img =
+        img_lib.grayscale(img_lib.copyResize(image, width: 256, height: 256));
+    int score = 0;
+
+    for (int x = 0; x < 256 - laplaceKernel.length + 1; x++) {
+      for (int y = 0; y < 256 - laplaceKernel.length + 1; y++) {
+        int result = 0;
+        for (int i = 0; i < laplaceKernel.length; i++) {
+          for (int j = 0; j < laplaceKernel.length; j++) {
+            result +=
+                (img.getPixel(x + i, y + j).r * laplaceKernel[i][j]).toInt();
+          }
+        }
+        if (result > _laplaceThreshold) score++;
+      }
+    }
+
+    return score;
+  }
+
+  Future<double> _calculateLiveness(img_lib.Image image) async {
+    final input = _preprocessImage(image).reshape([1, 256, 256, 3]);
+    final clssPred = List.filled(1 * 8, 0.0).reshape([1, 8]);
+    final leafNodeMask = List.filled(1 * 8, 0.0).reshape([1, 8]);
+
+    _antiSpoofingInterpreter.runForMultipleInputs(
+      [input],
+      {0: clssPred, 1: leafNodeMask},
+    );
+
+    return _calculateLeafScore(clssPred, leafNodeMask);
+  }
+
+  double _calculateLeafScore(List clssPred, List leafNodeMask) {
+    double score = 0.0;
+    for (int i = 0; i < 8; i++) {
+      score += ((clssPred[0][i] * leafNodeMask[0][i]) as double).abs();
+    }
+    return score;
+  }
+
+  Float32List _preprocessImage(img_lib.Image image) {
+    final img = img_lib.copyResizeCropSquare(image, size: 256);
+    final buffer = Float32List(1 * 256 * 256 * 3);
+    int pixelIndex = 0;
+
+    for (int i = 0; i < 256; i++) {
+      for (int j = 0; j < 256; j++) {
+        final pixel = img.getPixel(j, i);
+        buffer[pixelIndex++] = pixel.r / 255;
+        buffer[pixelIndex++] = pixel.g / 255;
+        buffer[pixelIndex++] = pixel.b / 255;
+      }
+    }
+
+    return buffer;
   }
 
   @override
   void dispose() {
     _tfliteInterpreter.close();
-    _blinkTimer?.cancel();
+    _antiSpoofingInterpreter.close();
     _disposeCamera();
+    _nameController.dispose();
     super.dispose();
-  }
-
-  void _toggleCameraDirection() async {
-    if (_direction == CameraLensDirection.back) {
-      _direction = CameraLensDirection.front;
-    } else {
-      _direction = CameraLensDirection.back;
-    }
-    if (_camera!.value.isStreamingImages) {
-      await _camera!.stopImageStream();
-      await _camera!.dispose();
-      setState(() {
-        _camera = null;
-      });
-    }
-
-    await _initializeCamera();
-  }
-
-  void _addLabel() {
-    setState(() {
-      _camera = null;
-    });
-
-    final formKey = GlobalKey<FormState>();
-
-    var alert = AlertDialog(
-      title: Text("Add Face"),
-      content: Form(
-        key: formKey,
-        child: Row(
-          children: <Widget>[
-            Expanded(
-              child: TextFormField(
-                controller: _name,
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return "Name cannot be empty";
-                  }
-                  return null;
-                },
-                autofocus: true,
-                decoration:
-                    InputDecoration(labelText: "Name", icon: Icon(Icons.face)),
-              ),
-            )
-          ],
-        ),
-      ),
-      actions: <Widget>[
-        TextButton(
-          child: Text("Save"),
-          onPressed: () async {
-            if (formKey.currentState!.validate()) {
-              await _handle(_name.text.trim().toUpperCase());
-              _name.clear();
-              if (mounted) {
-                Navigator.pop(context);
-              }
-            }
-          },
-        ),
-        TextButton(
-          child: Text("Cancel"),
-          onPressed: () async {
-            await _initializeCamera();
-            if (mounted) {
-              Navigator.pop(context);
-            }
-          },
-        )
-      ],
-    );
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return alert;
-      },
-    );
-  }
-
-  Future<void> _handle(String text) async {
-    _faceEmbeddingsMap[text] = _currentFaceEmbedding;
-    _faceEmbeddingsFile!.writeAsStringSync(json.encode(_faceEmbeddingsMap));
-    await _initializeCamera();
   }
 }
