@@ -149,3 +149,7 @@ flutter run
 
 Demo
 APK: [Download APK](https://drive.google.com/file/d/1M6xqMXUkSgj03VRRyBRdjBPQskJ6MFVO/view?usp=sharing)
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
